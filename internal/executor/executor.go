@@ -23,6 +23,17 @@ type CMDExecutor struct {
 	wg sync.WaitGroup
 }
 
+func NewDefaultCMDExecutor() *CMDExecutor {
+	return NewCMDExecutor(
+		time.Second*60,
+		5,
+		5,
+		10,
+		&cmddownloader.FastHTTPFactory{},
+		&processor.SimpleProcessorFactory{},
+	)
+}
+
 func NewCMDExecutor(
 	timeout time.Duration,
 	downloaderCnt int,
