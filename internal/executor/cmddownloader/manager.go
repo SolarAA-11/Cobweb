@@ -34,7 +34,9 @@ type DownloaderManager struct {
 	routineCntPerDownloader int
 	maxDownloaderErrCnt     int
 
-	downloaderFactory AbsFactory
+	downloaderFactory AbsDownloaderFactory
+
+	closeSyncOnce sync.Once
 }
 
 func NewDownloaderManager(
@@ -42,8 +44,8 @@ func NewDownloaderManager(
 	downloaderCnt int,
 	routineCntPerDownloader int,
 	maxDownloaderErrCnt int,
-	downloaderFactory AbsFactory,
-) *DownloaderManager {
+	downloaderFactory AbsDownloaderFactory,
+) (*DownloaderManager, <-chan command.AbsCommand) {
 	manager := &DownloaderManager{
 		downloaderPool: &sync.Pool{},
 
@@ -66,6 +68,8 @@ func NewDownloaderManager(
 		maxDownloaderErrCnt:     maxDownloaderErrCnt,
 
 		downloaderFactory: downloaderFactory,
+
+		closeSyncOnce: sync.Once{},
 	}
 
 	// 启动的 worker 协程数量等于 downloaderCnt * routineCntPerDownloader
@@ -73,7 +77,7 @@ func NewDownloaderManager(
 		go manager.workerRoutine(i)
 	}
 
-	return manager
+	return manager, manager.fanInChannel
 }
 
 // 接受一个 Command, 将其发送到 FanOut Channel 上
@@ -92,14 +96,22 @@ func (this *DownloaderManager) AcceptCommand(cmd command.AbsCommand) bool {
 // 等待 Manager 中所有 Downloader 完成当前请求的内容
 // 所有请求完毕后关闭 Manager
 func (this *DownloaderManager) WaitAndStop() {
-	// 关闭 FanOutChannel
-	this.runningRWLocker.Lock()
-	this.running = false
-	close(this.fanOutChannel)
-	this.runningRWLocker.Unlock()
+	this.closeSyncOnce.Do(func() {
+		// 关闭 FanOutChannel
+		this.runningRWLocker.Lock()
+		this.running = false
+		close(this.fanOutChannel)
+		this.runningRWLocker.Unlock()
 
-	//  等待全部 Routine 结束
-	this.routineCloseWG.Wait()
+		//  等待全部 Routine 结束
+		this.routineCloseWG.Wait()
+
+		// 关闭 fanInChannel
+		this.runningRWLocker.Lock()
+		close(this.fanInChannel)
+		this.runningRWLocker.Unlock()
+	})
+
 }
 
 // Fan Out 的协程
