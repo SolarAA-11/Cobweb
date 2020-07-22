@@ -3,6 +3,7 @@ package cmddownloader
 import (
 	"container/list"
 	"github.com/SolarDomo/Cobweb/internal/executor/command"
+	"github.com/SolarDomo/Cobweb/internal/proxypool/storage"
 	"github.com/sirupsen/logrus"
 	"sync"
 	"time"
@@ -87,6 +88,7 @@ func (this *DownloaderManager) AcceptCommand(cmd command.AbsCommand) bool {
 	defer this.runningRWLocker.RUnlock()
 	if this.running {
 		this.fanOutChannel <- cmd
+		logrus.WithField("TargetURL", cmd.GetTargetURL()).Debug("DownloaderManager 接受 Command")
 		return true
 	} else {
 		return false
@@ -116,6 +118,9 @@ func (this *DownloaderManager) WaitAndStop() {
 
 // Fan Out 的协程
 func (this *DownloaderManager) workerRoutine(routineID int) {
+	logEntry := logrus.WithField("RoutineID", routineID)
+	logEntry.Debug("DownloaderManager 启动新 Worker 协程")
+
 	this.routineCloseWG.Add(1)
 	defer this.routineCloseWG.Done()
 
@@ -131,9 +136,14 @@ func (this *DownloaderManager) workerRoutine(routineID int) {
 		cmd.SetDownloadResult(code, body, err)
 		this.fanInChannel <- cmd
 
+		logEntry.WithFields(logrus.Fields{
+			"TargetURL": cmd.GetTargetURL(),
+			"Proxy":     downloader.GetProxyUsed(),
+		}).Debug("DownloaderManager Worker 完成一次请求")
+
 		// 如果 Downloader 的 ErrCnt 大于 maxDownloaderErrCnt
 		// 则不将其加入到 Downloader Pool 中
-		if err != nil {
+		if err != nil || code != 200 {
 			errCnt := downloader.IncreaseErrCnt()
 			if errCnt >= this.maxDownloaderErrCnt {
 				this.removeProxyUsed(downloader)
@@ -149,6 +159,8 @@ func (this *DownloaderManager) workerRoutine(routineID int) {
 		// Downloader ErrCnt 尚未达到最大值 将其归还到 Pool
 		this.downloaderPool.Put(downloader)
 	}
+
+	logEntry.Debug("关闭 DownloaderManager Worker 协程")
 }
 
 // 从 ProxyList 中删除 downloader 对应的 Proxy
@@ -164,6 +176,7 @@ func (this *DownloaderManager) removeProxyUsed(downloader AbsCMDDownloader) {
 	}
 
 	once.Do(func() {
+
 		proxy := downloader.GetProxyUsed()
 
 		this.proxyUsedListRWLocker.Lock()
@@ -174,6 +187,20 @@ func (this *DownloaderManager) removeProxyUsed(downloader AbsCMDDownloader) {
 			}
 		}
 		this.proxyUsedListRWLocker.Unlock()
+
+		// storage 中降权
+		err := storage.Singleton().DeactivateProxy(proxy)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{
+				"Proxy":      proxy,
+				"Downloader": downloader.GetDownloaderName(),
+			}).Error("Proxy 降权失败")
+		}
+
+		logrus.WithFields(logrus.Fields{
+			"Proxy":      proxy,
+			"Downloader": downloader.GetDownloaderName(),
+		}).Info("DownloaderManager 删除 Downloader")
 	})
 }
 
@@ -187,7 +214,7 @@ func (this *DownloaderManager) getDownloaderFromPool() AbsCMDDownloader {
 	downloaderVal := this.downloaderPool.Get()
 	if downloaderVal == nil {
 		this.appendNewDownloaderToPool()
-		downloaderVal := this.downloaderPool.Get()
+		downloaderVal = this.downloaderPool.Get()
 		if downloaderVal == nil {
 			logrus.Error("Downloader Manager 从 Pool 中获取协程失败")
 			return nil
@@ -234,4 +261,12 @@ func (this *DownloaderManager) appendNewDownloaderToPool() {
 		this.proxyUsedList.PushBack(newDownloader.GetProxyUsed())
 		this.proxyUsedListRWLocker.Unlock()
 	}
+
+	// downloader2Once 添加新的 downloader 到 sync.Once
+	this.downloader2Once.Store(newDownloader, &sync.Once{})
+
+	logrus.WithFields(logrus.Fields{
+		"Proxy":      proxyUsed,
+		"Downloader": newDownloader.GetDownloaderName(),
+	}).Info("DownloaderManager 添加新的 Downloader")
 }
