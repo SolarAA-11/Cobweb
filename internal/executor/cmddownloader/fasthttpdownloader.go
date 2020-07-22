@@ -5,6 +5,7 @@ import (
 	"github.com/SolarDomo/Cobweb/internal/proxypool/models"
 	"github.com/SolarDomo/Cobweb/internal/proxypool/storage"
 	"github.com/valyala/fasthttp"
+	"sync"
 	"time"
 )
 
@@ -44,24 +45,45 @@ func (this *FastHTTPFactory) NewDownloader(proxyRefuseList *list.List, proxyCntM
 type fastHTTPDownloader struct {
 	client *fasthttp.Client
 	proxy  *models.Proxy
+
+	errCntMut sync.RWMutex
+	errCnt    int
 }
 
 func (this *fastHTTPDownloader) GetProxyUsed() *models.Proxy {
-	panic("implement me")
+	return this.proxy
 }
 
 func (this *fastHTTPDownloader) GetTimeout(url string, timeout time.Duration) (statusCode int, respBody []byte, err error) {
-	panic("implement me")
+	return this.client.GetTimeout(nil, url, timeout)
 }
 
 func (this *fastHTTPDownloader) IncreaseErrCnt() int {
-	panic("implement me")
+	this.errCntMut.Lock()
+	defer this.errCntMut.Unlock()
+
+	this.errCnt += 1
+	return this.errCnt
 }
 
 func (this *fastHTTPDownloader) ResetErrCnt(maxErrCnt int) bool {
-	panic("implement me")
+	this.errCntMut.Lock()
+	defer this.errCntMut.Unlock()
+
+	if this.errCnt >= maxErrCnt {
+		return false
+	} else {
+		this.errCnt = 0
+		return true
+	}
 }
 
 func (this *fastHTTPDownloader) CheckErrCnt(maxErrCnt int) bool {
-	panic("implement me")
+	this.errCntMut.RLock()
+	defer this.errCntMut.RUnlock()
+	return this.errCnt < maxErrCnt
+}
+
+func (this *fastHTTPDownloader) GetDownloaderName() string {
+	return "FastHTTPDownloader"
 }
