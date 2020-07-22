@@ -5,7 +5,7 @@ import "sync"
 type AbsCommand interface {
 	GetTargetURL() string
 	SetDownloadResult(respCode int, respBody []byte, respErr error)
-	Process() AbsCommand
+	Process() []AbsCommand
 	Complete()
 	GetCompleteChannel() <-chan struct{}
 }
@@ -29,7 +29,7 @@ func (this *BaseCommand) SetDownloadResult(respCode int, respBody []byte, respEr
 	this.RespErr = respErr
 }
 
-func (this *BaseCommand) Process() AbsCommand {
+func (this *BaseCommand) Process() []AbsCommand {
 	panic("implement me")
 }
 
