@@ -4,6 +4,7 @@ import (
 	"github.com/SolarDomo/Cobweb/internal/executor/cmddownloader"
 	"github.com/SolarDomo/Cobweb/internal/executor/command"
 	"github.com/SolarDomo/Cobweb/internal/executor/processor"
+	"github.com/sirupsen/logrus"
 	"sync"
 	"time"
 )
@@ -43,6 +44,7 @@ func NewCMDExecutor(
 		processor:                 p,
 		processorResultCMDChannel: processorResultCMDChannel,
 	}
+	go executor.workerRoutine()
 
 	return executor
 }
@@ -63,8 +65,13 @@ func (this *CMDExecutor) WaitAndStop() {
 // 发送到 processorResultCMDChannel 里
 // 此协程需要将 processorResultCMDChannel 里的 Cmd 重写加入到 Executor 处理
 func (this *CMDExecutor) workerRoutine() {
+	logrus.Info("启动 CMDExecutor Command 协程")
 	this.wg.Add(1)
-	defer this.wg.Done()
+
+	defer func() {
+		logrus.Info("关闭 CMD Executor Command 协程")
+		this.wg.Done()
+	}()
 
 	for cmd := range this.processorResultCMDChannel {
 		this.downloaderManager.AcceptCommand(cmd)
