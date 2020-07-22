@@ -34,12 +34,16 @@ func (this *BaseCommand) Process() []AbsCommand {
 }
 
 func (this *BaseCommand) Complete() {
-	close(this.completeChannel)
+	close(this.getCompleteChannel())
 }
 
-func (this *BaseCommand) GetCompleteChannel() <-chan struct{} {
+func (this *BaseCommand) getCompleteChannel() chan struct{} {
 	this.once.Do(func() {
 		this.completeChannel = make(chan struct{})
 	})
 	return this.completeChannel
+}
+
+func (this *BaseCommand) GetCompleteChannel() <-chan struct{} {
+	return this.getCompleteChannel()
 }
