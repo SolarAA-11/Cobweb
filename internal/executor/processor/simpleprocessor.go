@@ -2,6 +2,7 @@ package processor
 
 import (
 	"github.com/SolarDomo/Cobweb/internal/executor/command"
+	"github.com/sirupsen/logrus"
 	"runtime"
 	"sync"
 )
@@ -25,7 +26,6 @@ func (this *SimpleProcessorFactory) NewProcessor(
 }
 
 // 简单的处理器
-//
 type simpleProcessor struct {
 	fanOutCmdChannel <-chan command.AbsCommand
 	fanInCmdChannel  chan command.AbsCommand
@@ -35,8 +35,18 @@ type simpleProcessor struct {
 }
 
 func (this *simpleProcessor) workerRoutine(routineID int) {
+	logEntry := logrus.WithFields(logrus.Fields{
+		"ProcessorName": this.GetProcessorName(),
+		"RoutineID":     routineID,
+	})
+
+	logEntry.Debug("启动 workerRoutine")
 	this.wg.Add(1)
-	defer this.wg.Done()
+
+	defer func() {
+		logEntry.Debug("关闭 workerRoutine")
+		this.wg.Done()
+	}()
 
 	for cmd := range this.fanOutCmdChannel {
 		resultCmdList := cmd.Process()
