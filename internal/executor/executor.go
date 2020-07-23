@@ -1,90 +1,89 @@
 package executor
 
 import (
-	"github.com/SolarDomo/Cobweb/internal/executor/cmddownloader"
-	"github.com/SolarDomo/Cobweb/internal/executor/command"
-	"github.com/SolarDomo/Cobweb/internal/executor/processor"
 	"github.com/sirupsen/logrus"
 	"sync"
-	"time"
 )
 
-// command.AbsCommand 的 Executor
-type CMDExecutor struct {
-	downloaderManager *cmddownloader.DownloaderManager
-	processor         processor.AbsProcessor
+type Executor struct {
+	runningLocker sync.RWMutex
+	running       bool
 
-	// processorResultCMDChannel
-	// processor 处理完 Command 之后, 可能会产生新的 Command
-	// processor 将新的 Command 发送到此 Channel
-	// Executor 负责将此 Channel 中 Command 重新处理
-	processorResultCMDChannel <-chan command.AbsCommand
+	downloadChannel chan *Command
+	dManager        *DownloaderManager
 
-	wg sync.WaitGroup
+	processChannel chan *Command
+	processor      *Processor
+
+	once sync.Once
 }
 
-func NewDefaultCMDExecutor() *CMDExecutor {
-	return NewCMDExecutor(
-		time.Second*60,
-		5,
-		5,
-		10,
-		&cmddownloader.FastHTTPFactory{},
-		&processor.SimpleProcessorFactory{},
-	)
-}
-
-func NewCMDExecutor(
-	timeout time.Duration,
-	downloaderCnt int,
-	routineCntPerDownloader int,
-	maxDownloaderErrCnt int,
-	downloaderFactory cmddownloader.AbsDownloaderFactory,
-	processorFactory processor.AbsProcessorFactory,
-) *CMDExecutor {
-	downloaderManager, downloaderResultCMDChannel := cmddownloader.NewDownloaderManager(
-		timeout,
-		downloaderCnt,
-		routineCntPerDownloader,
-		maxDownloaderErrCnt,
-		downloaderFactory,
-	)
-	p, processorResultCMDChannel := processorFactory.NewProcessor(downloaderResultCMDChannel)
-	executor := &CMDExecutor{
-		downloaderManager:         downloaderManager,
-		processor:                 p,
-		processorResultCMDChannel: processorResultCMDChannel,
+func NewExecutor() *Executor {
+	e := &Executor{
+		downloadChannel: make(chan *Command),
+		processChannel:  make(chan *Command),
 	}
-	go executor.workerRoutine()
-
-	return executor
+	e.dManager = newDownloaderManager(e.downloadChannel, e.processChannel)
+	e.processor = newProcessor(e.processChannel, e.downloadChannel)
+	e.running = true
+	return e
 }
 
-func (this *CMDExecutor) AcceptCommand(command command.AbsCommand) bool {
-	return this.downloaderManager.AcceptCommand(command)
-}
+func (e *Executor) AcceptTask(task AbsTask) bool {
+	e.runningLocker.RLock()
+	defer e.runningLocker.RUnlock()
 
-func (this *CMDExecutor) WaitAndStop() {
-	this.downloaderManager.WaitAndStop()
-	this.processor.WaitAndStop()
-	this.wg.Wait()
-}
+	if e.running {
+		cmds := task.GetCommands()
+		for _, cmd := range cmds {
+			e.downloadChannel <- cmd
 
-// Processor 处理 Command 之后, 可能会将
-// 1. 旧 Command
-// 2. 新 Command
-// 发送到 processorResultCMDChannel 里
-// 此协程需要将 processorResultCMDChannel 里的 Cmd 重写加入到 Executor 处理
-func (this *CMDExecutor) workerRoutine() {
-	logrus.Info("启动 CMDExecutor Command 协程")
-	this.wg.Add(1)
-
-	defer func() {
-		logrus.Info("关闭 CMD Executor Command 协程")
-		this.wg.Done()
-	}()
-
-	for cmd := range this.processorResultCMDChannel {
-		this.downloaderManager.AcceptCommand(cmd)
+			logrus.WithFields(logrus.Fields{
+				"TargetURL": cmd.ctx.Request.Url,
+				"Task":      cmd.ctx.Task.GetTaskName(),
+			}).Debug("接受 Task")
+		}
+		return true
+	} else {
+		return false
 	}
+}
+
+func (e *Executor) WaitAndStop() {
+	e.once.Do(func() {
+		logrus.Debug("开始关闭 Executor")
+
+		go e.dropDataInDownloadChannel()
+		go e.dropDataInProcessChannel()
+		e.dManager.WaitAndStop()
+		e.processor.WaitAndStop()
+		close(e.downloadChannel)
+		close(e.processChannel)
+
+		logrus.Info("已关闭 Executor")
+	})
+}
+
+func (e *Executor) dropDataInDownloadChannel() {
+	cnt := 0
+	for cmd := range e.downloadChannel {
+		logrus.WithFields(logrus.Fields{
+			"Task": cmd.ctx.Task.GetTaskName(),
+			"URL":  cmd.ctx.Request.Url.String(),
+		}).Debug("抛弃 Download Command")
+		cnt++
+	}
+	logrus.WithField("数量", cnt).Info("抛弃 DownloaderChannel 完成, Channel 以及关闭")
+}
+
+func (e *Executor) dropDataInProcessChannel() {
+	cnt := 0
+	for cmd := range e.downloadChannel {
+		logrus.WithFields(logrus.Fields{
+			"Task": cmd.ctx.Task.GetTaskName(),
+			"URL":  cmd.ctx.Request.Url.String(),
+		}).Debug("抛弃 Process Command")
+		cnt++
+	}
+	logrus.WithField("数量", cnt).Info("抛弃 ProcessChannel 完成, Channel 以及关闭")
 }
