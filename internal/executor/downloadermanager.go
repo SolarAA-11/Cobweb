@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"github.com/SolarDomo/Cobweb/internal/proxypool/storage"
 	"github.com/sirupsen/logrus"
 	"sync"
 	"time"
@@ -51,6 +52,10 @@ func newDownloaderManager(
 			logrus.Fatal("生成 Downloader 失败")
 		}
 		d.downloaderSlice = append(d.downloaderSlice, newDownloader)
+
+		logrus.WithFields(logrus.Fields{
+			"Proxy": newDownloader.GetProxyUsed(),
+		}).Info("添加新 Downloader")
 	}
 
 	for i := 0; i < d.maxDownloaderConcurrentReqCnt*d.downloaderCnt; i++ {
@@ -89,11 +94,11 @@ func (d *DownloaderManager) workRoutine(routineID int) {
 			}
 
 			downloader.Do(cmd)
-			downloader.Release()
+			downloader.Release(cmd.ctx.Request)
 
 			if cmd.ResponseLegal() {
 				if !downloader.ResetErrCnt(d.maxDownloadErrCnt) {
-					d.newReplaceDownloader(downloader)
+					d.replaceOldDownloader(downloader)
 				}
 				d.cmdOutChan <- cmd
 
@@ -102,7 +107,7 @@ func (d *DownloaderManager) workRoutine(routineID int) {
 				}).WithFields(cmd.ctx.LogrusFields()).Debug("完成请求 发送到 cmdOutChan")
 			} else {
 				if !downloader.IncreaseErrCnt(d.maxDownloadErrCnt) {
-					d.newReplaceDownloader(downloader)
+					d.replaceOldDownloader(downloader)
 				}
 				d.cmdInChan <- cmd
 
@@ -120,16 +125,21 @@ func (d *DownloaderManager) workRoutine(routineID int) {
 	logEntry.Debug("关闭 DownloaderManager 协程")
 }
 
-func (d *DownloaderManager) newReplaceDownloader(downloader *Downloader) {
+func (d *DownloaderManager) replaceOldDownloader(old *Downloader) {
 	d.sliceLocker.Lock()
 	defer d.sliceLocker.Unlock()
 
 	dIndex := 0
-	for dIndex < len(d.downloaderSlice) && d.downloaderSlice[dIndex] != downloader {
+	for dIndex < len(d.downloaderSlice) && d.downloaderSlice[dIndex] != old {
 		dIndex++
 	}
 	if dIndex >= len(d.downloaderSlice) {
-		logrus.WithFields(logrus.Fields{}).Fatal("Index 越界")
+		// 越界表示当前使用 downloader 在之前处理 Command 的时候就已经被踢出
+		// 并使用了新的 Downloader 替换
+		//logrus.WithFields(logrus.Fields{
+		//	"Proxy": old.GetProxyUsed(),
+		//}).Fatal("Index 越界")
+		return
 	}
 
 	newDownloader := d.factory.NewDownloader(d.downloaderSlice, d.maxDownloaderConcurrentReqCnt, d.downloaderCnt*2)
@@ -137,11 +147,27 @@ func (d *DownloaderManager) newReplaceDownloader(downloader *Downloader) {
 		logrus.WithFields(logrus.Fields{}).Fatal("新建 Downloader 失败")
 	}
 
-	d.downloaderSlice[dIndex] = newDownloader
+	// 使用 dIndex 替换尽管速度稍快
+	// 但是如果 dIndex 为 0, 则会一直优先使用第一个
+	// 而通过之前的运行 后面可能更加可靠的 Downloader 无法得到有效的使用
+	// d.downloaderSlice[dIndex] = newDownloader
+	//
+	// 由于获取 Downloader 的方法为顺序迭代 d.downloaderSlice
+	// 则将失效的 Downloader 从 slice 中移除
+	// 新的 Downloader 加入 slice 的尾部
+	// 则跟可靠的 Downloader 靠前, 优先使用
+	d.downloaderSlice = append(d.downloaderSlice[:dIndex], d.downloaderSlice[dIndex+1:]...)
+	d.downloaderSlice = append(d.downloaderSlice, newDownloader)
+
+	// 对 Old Downloader 的 Proxy 进行降权
+	err := storage.Singleton().DeactivateProxy(old.GetProxyUsed())
+	if err != nil {
+		logrus.WithField("Proxy", &old).Error("代理降权失败")
+	}
 
 	logrus.WithFields(logrus.Fields{
-		"OldProxy": downloader.GetProxyUsed(),
-		"NewProxy": downloader.GetProxyUsed(),
+		"OldProxy": old.GetProxyUsed(),
+		"NewProxy": newDownloader.GetProxyUsed(),
 	}).Info("更换 Downloader")
 }
 
@@ -151,14 +177,14 @@ func (d *DownloaderManager) getProperDownloader(cmd *Command) *Downloader {
 
 	var downloader *Downloader = nil
 	for _, d2 := range d.downloaderSlice {
-		if d2.TryAcquire() {
+		if d2.TryAcquire(cmd.ctx.Request) {
 			lastReqTime := d2.GetLastReqTime(cmd.ctx.Request)
 			requireTime := lastReqTime.Add(d.reqTimeInterval)
 			if requireTime.Before(time.Now()) {
 				downloader = d2
 				break
 			} else {
-				d2.Release()
+				d2.Release(cmd.ctx.Request)
 			}
 		}
 	}
@@ -172,5 +198,5 @@ func (d *DownloaderManager) WaitAndStop() {
 		close(d.closeChan)
 	})
 	d.wg.Wait()
-	logrus.Info("已经关闭 DownloaderManager")
+	logrus.Info("已关闭 DownloaderManager")
 }
