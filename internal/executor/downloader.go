@@ -4,6 +4,7 @@ import (
 	"github.com/SolarDomo/Cobweb/internal/proxypool/models"
 	"github.com/SolarDomo/Cobweb/internal/proxypool/storage"
 	"github.com/SolarDomo/Cobweb/pkg/utils"
+	"github.com/deckarep/golang-set"
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
 	"sync"
@@ -19,8 +20,9 @@ type NoProxyDownloaderFactory struct {
 
 func (dFactory *NoProxyDownloaderFactory) NewDownloader(_ []*Downloader, maxConcurrentReqCnt int, _ int) *Downloader {
 	return &Downloader{
-		client:    &fasthttp.Client{},
-		semaphore: utils.NewSemaphore(maxConcurrentReqCnt),
+		client:          &fasthttp.Client{},
+		semaphore:       utils.NewSemaphore(maxConcurrentReqCnt),
+		requiredHostSet: mapset.NewSet(),
 	}
 }
 
@@ -48,9 +50,10 @@ func (dFactory *DownloaderFactory) NewDownloader(downloaderList []*Downloader, m
 	}
 
 	d := &Downloader{
-		client:    &fasthttp.Client{Dial: proxy.FastHTTPDialHTTPProxy()},
-		proxy:     proxy,
-		semaphore: utils.NewSemaphore(maxConcurrentReqCnt),
+		client:          &fasthttp.Client{Dial: proxy.FastHTTPDialHTTPProxy()},
+		proxy:           proxy,
+		semaphore:       utils.NewSemaphore(maxConcurrentReqCnt),
+		requiredHostSet: mapset.NewSet(),
 	}
 
 	return d
@@ -67,13 +70,40 @@ type Downloader struct {
 
 	errCntLocker sync.Mutex
 	errCnt       int
+
+	requiredHostSet mapset.Set
 }
 
-func (d *Downloader) TryAcquire() bool {
-	return d.semaphore.TryAcquire()
+func (d *Downloader) TryAcquire(req *fasthttp.Request) bool {
+	if req == nil {
+		logrus.WithField("Proxy", d.proxy).Fatal("req can not be nil")
+	}
+
+	if d.requiredHostSet.Contains(string(req.Host())) {
+		return false
+	} else {
+		if d.semaphore.TryAcquire() {
+			d.requiredHostSet.Add(string(req.Host()))
+			return true
+		} else {
+			return false
+		}
+	}
 }
 
-func (d *Downloader) Release() {
+func (d *Downloader) Release(req *fasthttp.Request) {
+	if req == nil {
+		logrus.WithField("Proxy", d.proxy).Fatal("req can not be nil")
+	}
+
+	if d.requiredHostSet.Contains(string(req.Host())) {
+		d.requiredHostSet.Remove(string(req.Host()))
+	} else {
+		logrus.WithFields(logrus.Fields{
+			"Request": req,
+			"Proxy":   d.proxy,
+		}).Fatal("Request 的 Host 不在 requiredHostSet 中")
+	}
 	d.semaphore.Release()
 }
 
