@@ -82,7 +82,7 @@ func (d *DownloaderManager) workRoutine(routineID int) {
 					logEntry.WithFields(logrus.Fields{
 						"等待时间": d.reqTimeInterval,
 					}).WithFields(cmd.ctx.LogrusFields()).Debug("暂无 Downloader 能够处理, 等待一段时间后返回通道")
-					time.Sleep(d.reqTimeInterval)
+					time.Sleep(d.reqTimeInterval + 1*time.Second)
 					d.cmdInChan <- cmd
 				}()
 				continue
@@ -153,7 +153,8 @@ func (d *DownloaderManager) getProperDownloader(cmd *Command) *Downloader {
 	for _, d2 := range d.downloaderSlice {
 		if d2.TryAcquire() {
 			lastReqTime := d2.GetLastReqTime(cmd.ctx.Request)
-			if lastReqTime.Add(d.reqTimeInterval).Before(time.Now()) {
+			requireTime := lastReqTime.Add(d.reqTimeInterval)
+			if requireTime.Before(time.Now()) {
 				downloader = d2
 				break
 			} else {
