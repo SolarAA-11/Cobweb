@@ -66,5 +66,5 @@ func (p *Processor) WaitAndStop() {
 		close(p.closeChan)
 	})
 	p.wg.Wait()
-	logrus.Info("已经关闭 Processor")
+	logrus.Info("已关闭 Processor")
 }

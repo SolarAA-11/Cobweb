@@ -76,7 +76,7 @@ func (e *Executor) AcceptTask(task AbsTask) bool {
 			"InitCMDCnt": len(cmds),
 		}).Info("Executor 接受新 Task")
 		for _, cmd := range cmds {
-			logrus.WithFields(cmd.ctx.LogrusFields()).Debug("接受 Task")
+			logrus.WithFields(cmd.ctx.LogrusFields()).Debug("接受 Task Init Command")
 			e.downloadChannel <- cmd
 		}
 		return true
@@ -109,7 +109,7 @@ func (e *Executor) dropDataInDownloadChannel() {
 		logrus.WithFields(cmd.ctx.LogrusFields()).Debug("抛弃 Download Command")
 		cnt++
 	}
-	logrus.WithField("数量", cnt).Info("抛弃 DownloaderChannel 完成, Channel 以及关闭")
+	logrus.WithField("数量", cnt).Info("Drop DownloaderChannel Data 完成, Channel 已经关闭")
 }
 
 func (e *Executor) dropDataInProcessChannel() {
@@ -121,5 +121,5 @@ func (e *Executor) dropDataInProcessChannel() {
 		logrus.WithFields(cmd.ctx.LogrusFields()).Debug("抛弃 Process Command")
 		cnt++
 	}
-	logrus.WithField("数量", cnt).Info("抛弃 ProcessChannel 完成, Channel 以及关闭")
+	logrus.WithField("数量", cnt).Info("Drop ProcessChannel Data 完成, Channel 已经关闭")
 }
