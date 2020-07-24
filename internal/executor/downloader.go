@@ -2,15 +2,58 @@ package executor
 
 import (
 	"github.com/SolarDomo/Cobweb/internal/proxypool/models"
+	"github.com/SolarDomo/Cobweb/internal/proxypool/storage"
 	"github.com/SolarDomo/Cobweb/pkg/utils"
+	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
-	url2 "net/url"
 	"sync"
 	"time"
 )
 
 type AbsDownloaderFactory interface {
 	NewDownloader(downloaderList []*Downloader, maxConcurrentReqCnt int, proxyTopK int) *Downloader
+}
+
+type NoProxyDownloaderFactory struct {
+}
+
+func (dFactory *NoProxyDownloaderFactory) NewDownloader(_ []*Downloader, maxConcurrentReqCnt int, _ int) *Downloader {
+	return &Downloader{
+		client:    &fasthttp.Client{},
+		semaphore: utils.NewSemaphore(maxConcurrentReqCnt),
+	}
+}
+
+type DownloaderFactory struct {
+}
+
+func (dFactory *DownloaderFactory) NewDownloader(downloaderList []*Downloader, maxConcurrentReqCnt int, proxyTopK int) *Downloader {
+	var proxy *models.Proxy = nil
+	for proxy == nil {
+		tmpProxy, err := storage.Singleton().GetRandTopKProxy(proxyTopK)
+		if err != nil {
+			logrus.WithFields(logrus.Fields{}).Fatal("新建 Downloader 时获取代理失败")
+		}
+
+		tmpProxyConflict := false
+		for _, downloader := range downloaderList {
+			if downloader.GetProxyUsed().Equal(tmpProxy) {
+				tmpProxyConflict = true
+				break
+			}
+		}
+		if !tmpProxyConflict {
+			proxy = tmpProxy
+		}
+	}
+
+	d := &Downloader{
+		client:    &fasthttp.Client{Dial: proxy.FastHTTPDialHTTPProxy()},
+		proxy:     proxy,
+		semaphore: utils.NewSemaphore(maxConcurrentReqCnt),
+	}
+
+	return d
 }
 
 var initTime = time.Unix(0, 0)
@@ -20,7 +63,7 @@ type Downloader struct {
 	client           *fasthttp.Client
 	proxy            *models.Proxy
 	host2LastReqTime sync.Map
-	semaphore        utils.Semaphore
+	semaphore        *utils.Semaphore
 
 	errCntLocker sync.Mutex
 	errCnt       int
@@ -34,12 +77,12 @@ func (d *Downloader) Release() {
 	d.semaphore.Release()
 }
 
-func (d *Downloader) GetLastReqTime(url *url2.URL) time.Time {
-	if url == nil {
+func (d *Downloader) GetLastReqTime(req *fasthttp.Request) time.Time {
+	if req == nil {
 		return initTime
 	}
 
-	val, ok := d.host2LastReqTime.Load(url.Hostname())
+	val, ok := d.host2LastReqTime.Load(req.Host())
 	if !ok {
 		return initTime
 	}
