@@ -40,6 +40,10 @@ func newDBProxyStorage() *dbProxyStorage {
 }
 
 func (this *dbProxyStorage) GetProxy(proxy *models.Proxy) (*models.Proxy, error) {
+	if proxy == nil {
+		return nil, fmt.Errorf("Proxy is nil")
+	}
+
 	proxyInDB := &models.Proxy{}
 	err := this.dbConn.Model(proxy).Where(&models.Proxy{Url: proxy.Url, Port: proxy.Port}).Find(proxyInDB).Error
 	if err != nil {
@@ -50,6 +54,10 @@ func (this *dbProxyStorage) GetProxy(proxy *models.Proxy) (*models.Proxy, error)
 }
 
 func (this *dbProxyStorage) HasProxy(proxy *models.Proxy) (bool, error) {
+	if proxy == nil {
+		return false, fmt.Errorf("Proxy is nil")
+	}
+
 	proxyCount := 0
 	err := this.dbConn.Model(proxy).Where(&models.Proxy{Url: proxy.Url, Port: proxy.Port}).Count(&proxyCount).Error
 	if err != nil {
@@ -60,6 +68,10 @@ func (this *dbProxyStorage) HasProxy(proxy *models.Proxy) (bool, error) {
 }
 
 func (this *dbProxyStorage) CreateProxy(proxy *models.Proxy) error {
+	if proxy == nil {
+		return fmt.Errorf("Proxy is nil")
+	}
+
 	exists, err := this.HasProxy(proxy)
 	if err != nil {
 		return err
@@ -106,6 +118,10 @@ func (this *dbProxyStorage) DeactivateProxy(proxy *models.Proxy) error {
 	proxyInDB.Score--
 	err = this.dbConn.Save(proxyInDB).Error
 	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"Error": err,
+			"Proxy": proxyInDB,
+		}).Info("降权 Proxy 失败")
 		return err
 	}
 
