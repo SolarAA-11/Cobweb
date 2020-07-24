@@ -15,6 +15,7 @@ type AbsTask interface {
 	GetCommands() []*Command
 	GetCompleteChan() <-chan struct{}
 	CommandComplete(command *Command)
+	CommandDownloadLegal(ctx *Context) bool
 }
 
 type BaseTask struct {
@@ -130,4 +131,11 @@ func (b *BaseTask) CommandComplete(command *Command) {
 			"Task": b.SubTask.GetTaskName(),
 		}).Info("Task 完成")
 	}
+}
+
+func (b *BaseTask) CommandDownloadLegal(ctx *Context) bool {
+	if ctx == nil || ctx.Response == nil {
+		return false
+	}
+	return ctx.RespErr == nil && ctx.Response.StatusCode() == 200
 }

@@ -12,7 +12,7 @@ func (c *Command) GetTaskName() string {
 }
 
 func (c *Command) ResponseLegal() bool {
-	return c.ctx.RespErr == nil
+	return c.ctx.Task.CommandDownloadLegal(c.ctx)
 }
 
 func (c *Command) Process() []*Command {
