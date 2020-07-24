@@ -61,6 +61,11 @@ func newDownloaderManager(
 }
 
 func (d *DownloaderManager) workRoutine(routineID int) {
+	logEntry := logrus.WithFields(logrus.Fields{
+		"ID": routineID,
+	})
+	logEntry.Debug("启动 DownloaderManager 协程")
+	d.wg.Add(1)
 
 	loop := true
 	for loop {
@@ -74,11 +79,9 @@ func (d *DownloaderManager) workRoutine(routineID int) {
 			downloader := d.getProperDownloader(cmd)
 			if downloader == nil {
 				go func() {
-					logrus.WithFields(logrus.Fields{
-						"WorkerID": routineID,
-						"URL":      cmd.ctx.RequestURI(),
-						"Task":     cmd.ctx.Task.GetTaskName(),
-					}).Debug("暂无 Downloader 能够处理, 等待一段时间后返回通道")
+					logEntry.WithFields(logrus.Fields{
+						"等待时间": d.reqTimeInterval,
+					}).WithFields(cmd.ctx.LogrusFields()).Debug("暂无 Downloader 能够处理, 等待一段时间后返回通道")
 					time.Sleep(d.reqTimeInterval)
 					d.cmdInChan <- cmd
 				}()
@@ -88,27 +91,33 @@ func (d *DownloaderManager) workRoutine(routineID int) {
 			downloader.Do(cmd)
 			downloader.Release()
 
-			logrus.WithFields(logrus.Fields{
-				"WorkerID": routineID,
-				"URI":      cmd.ctx.RequestURI(),
-				"Task":     cmd.ctx.Task.GetTaskName(),
-				"Proxy":    downloader.GetProxyUsed(),
-			}).Debug("完成请求")
-
 			if cmd.ResponseLegal() {
 				if !downloader.ResetErrCnt(d.maxDownloadErrCnt) {
 					d.newReplaceDownloader(downloader)
 				}
+				d.cmdOutChan <- cmd
+
+				logEntry.WithFields(logrus.Fields{
+					"Proxy": downloader.GetProxyUsed(),
+				}).WithFields(cmd.ctx.LogrusFields()).Debug("完成请求 发送到 cmdOutChan")
 			} else {
 				if !downloader.IncreaseErrCnt(d.maxDownloadErrCnt) {
 					d.newReplaceDownloader(downloader)
 				}
+				d.cmdInChan <- cmd
+
+				logEntry.WithFields(logrus.Fields{
+					"Proxy": downloader.GetProxyUsed(),
+				}).WithFields(cmd.ctx.LogrusFields()).Debug("请求失败 重新发送到 cmdInChan")
 			}
 
 		case <-d.closeChan:
 			loop = false
 		}
 	}
+
+	d.wg.Done()
+	logEntry.Debug("关闭 DownloaderManager 协程")
 }
 
 func (d *DownloaderManager) newReplaceDownloader(downloader *Downloader) {
@@ -157,8 +166,10 @@ func (d *DownloaderManager) getProperDownloader(cmd *Command) *Downloader {
 }
 
 func (d *DownloaderManager) WaitAndStop() {
+	logrus.Debug("开始关闭 DownloaderManager")
 	d.once.Do(func() {
 		close(d.closeChan)
 	})
 	d.wg.Wait()
+	logrus.Info("已经关闭 DownloaderManager")
 }

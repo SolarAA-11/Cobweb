@@ -61,8 +61,10 @@ func (p *Processor) outputCommands(commands []*Command) {
 }
 
 func (p *Processor) WaitAndStop() {
+	logrus.Debug("开始关闭 Processor")
 	p.once.Do(func() {
 		close(p.closeChan)
 	})
 	p.wg.Wait()
+	logrus.Info("已经关闭 Processor")
 }

@@ -82,7 +82,7 @@ func (d *Downloader) GetLastReqTime(req *fasthttp.Request) time.Time {
 		return initTime
 	}
 
-	val, ok := d.host2LastReqTime.Load(req.Host())
+	val, ok := d.host2LastReqTime.Load(string(req.Host()))
 	if !ok {
 		return initTime
 	}
@@ -101,18 +101,18 @@ func (d *Downloader) Do(cmd *Command) {
 	}
 	cmd.ctx.Response = fasthttp.AcquireResponse()
 
-	prevVal, ok := d.host2LastReqTime.Load(cmd.ctx.Request.Host())
-	d.host2LastReqTime.Store(cmd.ctx.Request.Host(), time.Now())
+	prevVal, ok := d.host2LastReqTime.Load(string(cmd.ctx.Request.Host()))
+	d.host2LastReqTime.Store(string(cmd.ctx.Request.Host()), time.Now())
 
 	cmd.ctx.RespErr = d.client.DoTimeout(cmd.ctx.Request, cmd.ctx.Response, cmd.ctx.ReqTimeout)
 
-	if !cmd.ResponseLegal() {
-		d.host2LastReqTime.Store(cmd.ctx.Request.Host(), time.Now())
+	if cmd.ResponseLegal() {
+		d.host2LastReqTime.Store(string(cmd.ctx.Request.Host()), time.Now())
 	} else {
 		if ok {
-			d.host2LastReqTime.Store(cmd.ctx.Request.Host(), prevVal)
+			d.host2LastReqTime.Store(string(cmd.ctx.Request.Host()), prevVal)
 		} else {
-			d.host2LastReqTime.Store(cmd.ctx.Request.Host(), initTime)
+			d.host2LastReqTime.Store(string(cmd.ctx.Request.Host()), initTime)
 		}
 	}
 }

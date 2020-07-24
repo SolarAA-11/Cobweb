@@ -26,7 +26,7 @@ func NewDefaultNoProxyExecutor() *Executor {
 		30,
 		10,
 		&NoProxyDownloaderFactory{},
-		time.Second*30,
+		time.Second*2,
 	)
 }
 
@@ -36,7 +36,7 @@ func NewDefaultExecutor() *Executor {
 		5,
 		10,
 		&DownloaderFactory{},
-		time.Second*30,
+		time.Second*3,
 	)
 }
 
@@ -71,13 +71,13 @@ func (e *Executor) AcceptTask(task AbsTask) bool {
 
 	if e.running {
 		cmds := task.GetCommands()
+		logrus.WithFields(logrus.Fields{
+			"Task":       task.GetTaskName(),
+			"InitCMDCnt": len(cmds),
+		}).Info("Executor 接受新 Task")
 		for _, cmd := range cmds {
+			logrus.WithFields(cmd.ctx.LogrusFields()).Debug("接受 Task")
 			e.downloadChannel <- cmd
-
-			logrus.WithFields(logrus.Fields{
-				"URI":  cmd.ctx.RequestURI(),
-				"Task": cmd.ctx.Task.GetTaskName(),
-			}).Debug("接受 Task")
 		}
 		return true
 	} else {
@@ -95,20 +95,18 @@ func (e *Executor) WaitAndStop() {
 		e.processor.WaitAndStop()
 		close(e.downloadChannel)
 		close(e.processChannel)
-
-		logrus.Info("已关闭 Executor")
 	})
 	e.wg.Wait()
+	logrus.Info("已关闭 Executor")
 }
 
 func (e *Executor) dropDataInDownloadChannel() {
 	e.wg.Add(1)
+	defer e.wg.Done()
+
 	cnt := 0
 	for cmd := range e.downloadChannel {
-		logrus.WithFields(logrus.Fields{
-			"Task": cmd.ctx.Task.GetTaskName(),
-			"URI":  cmd.ctx.RequestURI(),
-		}).Debug("抛弃 Download Command")
+		logrus.WithFields(cmd.ctx.LogrusFields()).Debug("抛弃 Download Command")
 		cnt++
 	}
 	logrus.WithField("数量", cnt).Info("抛弃 DownloaderChannel 完成, Channel 以及关闭")
@@ -116,12 +114,11 @@ func (e *Executor) dropDataInDownloadChannel() {
 
 func (e *Executor) dropDataInProcessChannel() {
 	e.wg.Add(1)
+	defer e.wg.Done()
+
 	cnt := 0
 	for cmd := range e.downloadChannel {
-		logrus.WithFields(logrus.Fields{
-			"Task": cmd.ctx.Task.GetTaskName(),
-			"URI":  cmd.ctx.RequestURI(),
-		}).Debug("抛弃 Process Command")
+		logrus.WithFields(cmd.ctx.LogrusFields()).Debug("抛弃 Process Command")
 		cnt++
 	}
 	logrus.WithField("数量", cnt).Info("抛弃 ProcessChannel 完成, Channel 以及关闭")

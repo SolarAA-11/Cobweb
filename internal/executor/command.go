@@ -16,16 +16,14 @@ func (c *Command) ResponseLegal() bool {
 }
 
 func (c *Command) Process() []*Command {
-	if c.ResponseLegal() {
+	if !c.ResponseLegal() {
 		logrus.WithFields(logrus.Fields{
-			"Task":    c.ctx.Task.GetTaskName(),
-			"Req":     c.ctx.Request.String(),
-			"Resp":    c.ctx.Response,
-			"RespErr": c.ctx.RespErr,
+			"Context": c.ctx,
 		}).Error("非法的 Command")
 		return nil
 	}
 
 	c.callback(c.ctx)
+	c.ctx.Task.CommandComplete(c)
 	return c.ctx.Task.GetCommands()
 }

@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"fmt"
+	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
 	"time"
 )
@@ -13,9 +15,28 @@ type Context struct {
 	RespErr    error
 }
 
-func (c *Context) RequestURI() string {
-	if c.Request == nil {
-		return ""
+func (c *Context) String() string {
+	return fmt.Sprintf("Task=( %s ), Req=( %s ), Resp=( %s ), RespErr=( %s )",
+		c.Task.GetTaskName(),
+		c.Request,
+		c.Response,
+		c.RespErr,
+	)
+}
+
+func (c *Context) LogrusFields() logrus.Fields {
+	fs := logrus.Fields{
+		"Task":    c.Task.GetTaskName(),
+		"Request": c.Request,
+		"RespErr": c.RespErr,
 	}
-	return string(c.Request.RequestURI())
+
+	if c.Response != nil {
+		fs["StatusCode"] = c.Response.StatusCode()
+		fs["BodyLen"] = len(c.Response.Body())
+	} else {
+		fs["Response"] = nil
+	}
+
+	return fs
 }

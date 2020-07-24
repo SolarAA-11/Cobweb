@@ -1,6 +1,9 @@
 package executor
 
 import (
+	"github.com/sirupsen/logrus"
+	"github.com/valyala/fasthttp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -11,6 +14,7 @@ type AbsTask interface {
 	GetTaskName() string
 	GetCommands() []*Command
 	GetCompleteChan() <-chan struct{}
+	CommandComplete(command *Command)
 }
 
 type BaseTask struct {
@@ -68,7 +72,7 @@ func (b *BaseTask) GetCompleteChan() <-chan struct{} {
 }
 
 func (b *BaseTask) AppendCommand(targetURL string, callback OnResponseCallback) {
-	cmd := b.NewCommand(targetURL, callback)
+	cmd := b.NewGetCommand(targetURL, callback)
 	if cmd == nil {
 		return
 	}
@@ -78,13 +82,52 @@ func (b *BaseTask) AppendCommand(targetURL string, callback OnResponseCallback) 
 	b.readyCMDs = append(b.readyCMDs, cmd)
 }
 
-func (b *BaseTask) NewCommand(targetURL string, callback OnResponseCallback) *Command {
+func (b *BaseTask) NewCommand(
+	method string,
+	uri string,
+	callback OnResponseCallback,
+) *Command {
+	req := fasthttp.AcquireRequest()
+	req.Header.SetMethod(strings.ToUpper(method))
+	req.SetRequestURI(uri)
+
+	ctx := &Context{
+		Task:       b.SubTask,
+		Request:    req,
+		Response:   nil,
+		ReqTimeout: b.timeout,
+		RespErr:    nil,
+	}
+
 	cmd := &Command{
-		ctx: &Context{
-			Request:  NewRequest(targetURL, b.timeout),
-			Response: nil,
-		},
+		ctx:      ctx,
 		callback: callback,
 	}
+
 	return cmd
+}
+
+func (b *BaseTask) NewGetCommand(uri string, callback OnResponseCallback) *Command {
+	return b.NewCommand("get", uri, callback)
+}
+
+func (b *BaseTask) CommandComplete(command *Command) {
+	b.runningCMDsLocker.Lock()
+	defer b.runningCMDsLocker.Unlock()
+
+	for i := range b.runningCMDs {
+		if b.runningCMDs[i] == command {
+			b.runningCMDs = append(b.runningCMDs[:i], b.runningCMDs[i+1:]...)
+			break
+		}
+	}
+
+	b.readyCMDsLocker.Lock()
+	defer b.readyCMDsLocker.Unlock()
+	if len(b.runningCMDs)+len(b.readyCMDs) == 0 {
+		close(b.getCompleteChan())
+		logrus.WithFields(logrus.Fields{
+			"Task": b.SubTask.GetTaskName(),
+		}).Info("Task 完成")
+	}
 }
