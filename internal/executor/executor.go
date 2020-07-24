@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"errors"
 	"github.com/sirupsen/logrus"
+	"reflect"
 	"sync"
 	"time"
 )
@@ -32,7 +34,7 @@ func NewDefaultNoProxyExecutor() *Executor {
 
 func NewDefaultExecutor() *Executor {
 	return NewExecutor(
-		5,
+		10,
 		5,
 		10,
 		&DownloaderFactory{},
@@ -72,17 +74,33 @@ func (e *Executor) AcceptTask(task AbsTask) bool {
 	if e.running {
 		cmds := task.GetCommands()
 		logrus.WithFields(logrus.Fields{
-			"Task":       task.GetTaskName(),
+			"BaseTask":   task.GetTaskName(),
 			"InitCMDCnt": len(cmds),
-		}).Info("Executor 接受新 Task")
+		}).Info("Executor 接受新 BaseTask")
 		for _, cmd := range cmds {
-			logrus.WithFields(cmd.ctx.LogrusFields()).Debug("接受 Task Init Command")
+			logrus.WithFields(cmd.ctx.LogrusFields()).Debug("接受 BaseTask Init Command")
 			e.downloadChannel <- cmd
 		}
 		return true
 	} else {
 		return false
 	}
+}
+
+func (e *Executor) AcceptTaskV2(task AbsTask) (bool, error) {
+	valOfTask := reflect.ValueOf(task)
+	if valOfTask.Kind() != reflect.Ptr {
+		return false, errors.New("task 必须为某结构体指针")
+	}
+
+	valOfTask = valOfTask.Elem()
+	if valOfTask.Kind() != reflect.Struct {
+		return false, errors.New("")
+	}
+
+	// todo
+
+	return false, nil
 }
 
 func (e *Executor) WaitAndStop() {
@@ -117,7 +135,7 @@ func (e *Executor) dropDataInProcessChannel() {
 	defer e.wg.Done()
 
 	cnt := 0
-	for cmd := range e.downloadChannel {
+	for cmd := range e.processChannel {
 		logrus.WithFields(cmd.ctx.LogrusFields()).Debug("抛弃 Process Command")
 		cnt++
 	}

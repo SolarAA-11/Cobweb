@@ -109,6 +109,8 @@ func (d *DownloaderManager) workRoutine(routineID int) {
 				if !downloader.IncreaseErrCnt(d.maxDownloadErrCnt) {
 					d.replaceOldDownloader(downloader)
 				}
+
+				cmd.ctx.BaseTask.IncreaseErrCnt()
 				d.cmdInChan <- cmd
 
 				logEntry.WithFields(logrus.Fields{

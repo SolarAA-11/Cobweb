@@ -25,7 +25,7 @@ func NewReentrantLock() sync.Locker {
 func GetGoroutineId() int {
 	defer func() {
 		if err := recover(); err != nil {
-			fmt.Println("panic recover:panic info:%v", err)
+			fmt.Printf("panic recover:panic info:%v", err)
 		}
 	}()
 

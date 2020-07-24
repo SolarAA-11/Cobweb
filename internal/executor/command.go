@@ -1,29 +1,27 @@
 package executor
 
-import "github.com/sirupsen/logrus"
-
 type Command struct {
 	ctx      *Context
 	callback OnResponseCallback
 }
 
 func (c *Command) GetTaskName() string {
-	return c.ctx.Task.GetTaskName()
+	return c.ctx.BaseTask.GetTaskName()
 }
 
 func (c *Command) ResponseLegal() bool {
-	return c.ctx.Task.CommandDownloadLegal(c.ctx)
+	return c.ctx.BaseTask.CommandDownloadLegal(c.ctx)
 }
 
 func (c *Command) Process() []*Command {
-	if !c.ResponseLegal() {
-		logrus.WithFields(logrus.Fields{
-			"Context": c.ctx,
-		}).Error("非法的 Command")
-		return nil
+	c.callback(c.ctx)
+
+	if !c.ctx.retry {
+		c.ctx.BaseTask.CommandComplete(c)
+		return c.ctx.BaseTask.GetCommands()
+	} else {
+		c.ctx.retry = false
+		return append(c.ctx.BaseTask.GetCommands(), c)
 	}
 
-	c.callback(c.ctx)
-	c.ctx.Task.CommandComplete(c)
-	return c.ctx.Task.GetCommands()
 }
