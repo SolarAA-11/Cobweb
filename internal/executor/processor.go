@@ -6,65 +6,68 @@ import (
 	"sync"
 )
 
-type Processor struct {
-	cmdInChan  <-chan *Command
-	cmdOutChan chan<- *Command
+type processor struct {
+	inCMDCh  chan *Command
+	outCMDCh chan *Command
 
-	once      sync.Once
-	wg        sync.WaitGroup
-	closeChan chan struct{}
+	stopCh chan struct{}
+
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
-func newProcessor(inChan <-chan *Command, outChan chan<- *Command) *Processor {
-	p := &Processor{
-		cmdInChan:  inChan,
-		cmdOutChan: outChan,
-		closeChan:  make(chan struct{}),
+func newProcessor(inCMDChan chan *Command, outCMDChan chan *Command) *processor {
+	p := &processor{
+		inCMDCh:  inCMDChan,
+		outCMDCh: outCMDChan,
+		stopCh:   make(chan struct{}),
 	}
 
 	for i := 0; i < runtime.NumCPU(); i++ {
-		go p.workRoutine(i)
+		go p.processRoutine(i)
 	}
 
 	return p
 }
 
-func (p *Processor) workRoutine(routineID int) {
-	logEntry := logrus.WithFields(logrus.Fields{
-		"ID": routineID,
-	})
-	logEntry.Debug("启动 Processor 协程")
+func (p *processor) processRoutine(id int) {
+	p.wg.Add(1)
+	defer p.wg.Done()
+
+	logEntry := logrus.WithFields(logrus.Fields{"ID": id})
+	logEntry.Debug("Start process routine.")
 
 	var loop = true
 	for loop {
 		select {
-		case cmd, ok := <-p.cmdInChan:
+		case cmd, ok := <-p.inCMDCh:
 			if !ok {
-				continue
+				logEntry.Warn("Process routine is handling closed command channel. This routine will return")
+				loop = false
 			}
+			cmd.process()
+			go func() {
+				p.wg.Add(1)
+				defer p.wg.Done()
 
-			newCommandSlice := cmd.Process()
-			go p.outputCommands(newCommandSlice)
-
-		case <-p.closeChan:
+				newCMDs := cmd.ctx.task.extractCommands()
+				for _, newCMD := range newCMDs {
+					p.outCMDCh <- newCMD
+				}
+			}()
+		case <-p.stopCh:
 			loop = false
 		}
 	}
 
-	logEntry.Debug("关闭 Processor 协程")
+	logEntry.Info("Process routine stopped.")
 }
 
-func (p *Processor) outputCommands(commands []*Command) {
-	for _, command := range commands {
-		p.cmdOutChan <- command
-	}
-}
-
-func (p *Processor) WaitAndStop() {
-	logrus.Debug("开始关闭 Processor")
-	p.once.Do(func() {
-		close(p.closeChan)
+func (p *processor) Stop() {
+	p.stopOnce.Do(func() {
+		logrus.Info("processor stopping...")
+		close(p.stopCh)
 	})
 	p.wg.Wait()
-	logrus.Info("已关闭 Processor")
+	logrus.Info("processor stopped.")
 }

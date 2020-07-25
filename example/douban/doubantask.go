@@ -5,57 +5,67 @@ import (
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/SolarDomo/Cobweb/internal/executor"
-	"github.com/sirupsen/logrus"
-	"time"
+	"strings"
 )
 
-type DoubanTask struct {
-	*executor.BaseTask
+/*
+使用 Cobweb 爬取豆瓣电影 Top250 榜单
+在 instance 文件夹下建立文件夹 douban
+为每部电影 建立格式为
+	[排名].[电影名]
+文件夹
+文件中保存电影封面 cover.jpg
+*/
+
+type DoubanRule struct {
 }
 
-func NewDoubanTask() *DoubanTask {
-	t := &DoubanTask{}
-	t.BaseTask = executor.NewBastTask(t, time.Second*20)
-	for i := 0; i < 10; i++ {
-		t.AppendGetCommand(fmt.Sprintf("https://movie.douban.com/top250?start=%d&filter=", i*25), t.scrapeListPage)
+func (r *DoubanRule) InitLinks() []string {
+	links := make([]string, 0, 10)
+	for i := 0; i < 1; i++ {
+		links = append(links, fmt.Sprintf("https://movie.douban.com/top250?start=%d&filter=", i*25))
 	}
-	return t
+	return links
 }
 
-func (t *DoubanTask) GetTaskName() string {
-	return "DoubanTask"
-}
-
-func (t *DoubanTask) scrapeListPage(ctx *executor.Context) {
+func (r *DoubanRule) InitScrape(ctx *executor.Context) {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(ctx.Response.Body()))
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"Context": ctx,
-		}).Error("解析文档失败")
+		fmt.Println("BadRequest")
+		ctx.Retry()
 	}
-	divCount := doc.Find("#content > div > div.article > ol > li > div").Each(func(i int, s *goquery.Selection) {
-		detailPageLink, ok := s.Find("div.hd a").Attr("href")
+	l := doc.Find("#content > div > div.article > ol > li > div").Each(func(i int, s *goquery.Selection) {
+		link, ok := s.Find("div.pic > a").Attr("href")
 		if !ok {
-			logrus.Error("没有详情页面链接")
-			return
+			fmt.Println("BadRequest")
+			ctx.Retry()
 		}
 
-		t.AppendGetCommand(detailPageLink, t.scrapeDetailPage)
-
+		rank := s.Find("div.pic > em").Text()
+		ctx.Follow(link, r.scrapeDetailPage, executor.H{
+			"rank": rank,
+		})
 	}).Length()
-	if divCount == 0 {
-		logrus.WithFields(ctx.LogrusFields()).Error("错误页面")
+	if l == 0 {
+		fmt.Println("BadRequest")
 		ctx.Retry()
 	}
 }
 
-func (t *DoubanTask) scrapeDetailPage(ctx *executor.Context) {
-	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(ctx.Response.Body()))
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"Context": ctx,
-		}).Error("解析文档失败")
+func (r *DoubanRule) scrapeDetailPage(ctx *executor.Context) {
+	doc := ctx.Doc()
+	if doc == nil {
+		ctx.Retry()
 	}
-	title := doc.Find("#content > h1 > span:nth-child(1)").Text()
-	fmt.Println(title)
+
+	title := doc.Find("#content > h1 > span:first-child").Text()
+	if len(strings.TrimSpace(title)) == 0 {
+		ctx.Retry()
+	}
+	rank, _ := ctx.Get("rank")
+	coverLink, ok := doc.Find("#mainpic > a > img").Attr("src")
+	if !ok {
+		ctx.Retry()
+	}
+	ctx.SaveResource(coverLink, fmt.Sprintf("douban/%v.%v/cover", rank, title))
 }

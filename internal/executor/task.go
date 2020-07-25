@@ -1,35 +1,36 @@
 package executor
 
 import (
-	"github.com/SolarDomo/Cobweb/pkg/utils"
+	mapset "github.com/deckarep/golang-set"
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
-	"os"
-	"path"
-	"strings"
+	"reflect"
 	"sync"
 	"time"
 )
 
-// BaseTask 的 Command 下载完成后的回调函数
 type OnResponseCallback func(ctx *Context)
 
-//
-type H map[string]interface{}
+const (
+	DEFAULT_REQUEST_TIMEOUT = time.Second * 25
+)
 
-type AbsTask interface {
-	GetTaskName() string
-	GetCommands() []*Command
-	GetCompleteChan() <-chan struct{}
-	CommandDownloadLegal(ctx *Context) bool
-	IncreaseErrCnt()
-	GetErrCnt() int
+type BaseRule interface {
+	InitLinks() []string
+	InitScrape(ctx *Context)
 }
 
-type BaseTask struct {
-	taskName string
+type TimeoutRule interface {
+	RequestTimeout() time.Duration
+}
 
-	timeout time.Duration
+type Task struct {
+	rule BaseRule
+	name string
+
+	requestTimeout time.Duration
+
+	set mapset.Set
 
 	readyCMDsLocker sync.Mutex
 	readyCMDs       []*Command
@@ -37,232 +38,173 @@ type BaseTask struct {
 	runningCMDsLocker sync.Mutex
 	runningCMDs       []*Command
 
-	once         sync.Once
-	completeChan chan struct{}
+	completedCMDsLocker sync.Mutex
+	completedCMDs       []*Command
 
-	// 所有 Command 的 ErrCnt 和
+	fChanOnce sync.Once
+	fChan     chan struct{}
+
 	errCntLocker sync.Mutex
 	errCnt       int
 }
 
-func NewBastTask(
-	taskName string,
-	timeout time.Duration,
-) *BaseTask {
-	bt := &BaseTask{
-		taskName: taskName,
-		timeout:  timeout,
-	}
-	return bt
-}
-
-func (b *BaseTask) GetTaskName() string {
-	return b.taskName
-}
-
-func (b *BaseTask) GetCommands() []*Command {
-	b.readyCMDsLocker.Lock()
-	cmds := append([]*Command{}, b.readyCMDs...)
-	b.readyCMDs = b.readyCMDs[0:0]
-	b.readyCMDsLocker.Unlock()
-
-	b.runningCMDsLocker.Lock()
-	b.runningCMDs = append(b.runningCMDs, cmds...)
-	b.runningCMDsLocker.Unlock()
-
-	return cmds
-}
-
-func (b *BaseTask) getCompleteChan() chan struct{} {
-	b.once.Do(func() {
-		b.completeChan = make(chan struct{})
-	})
-	return b.completeChan
-}
-
-func (b *BaseTask) GetCompleteChan() <-chan struct{} {
-	return b.getCompleteChan()
-}
-
-func (b *BaseTask) appendCommand(cmd *Command) {
-	b.readyCMDsLocker.Lock()
-	defer b.readyCMDsLocker.Unlock()
-	b.readyCMDs = append(b.readyCMDs, cmd)
-}
-
-func (b *BaseTask) NewCommand(
-	method string,
-	uri string,
-	callback OnResponseCallback,
-	extraData ...H,
-) *Command {
-	req := fasthttp.AcquireRequest()
-	req.Header.SetMethod(strings.ToUpper(method))
-	req.SetRequestURI(uri)
-
-	ctx := &Context{
-		BaseTask:   b,
-		Request:    req,
-		Response:   nil,
-		ReqTimeout: b.timeout,
-		RespErr:    nil,
-	}
-
-	if len(extraData) == 1 {
-		for key, val := range extraData[0] {
-			ctx.Set(key, val)
+func newTask(rule BaseRule, name ...string) *Task {
+	taskName := ""
+	switch len(name) {
+	case 0:
+		ruleVal := reflect.ValueOf(rule)
+		if ruleVal.Kind() == reflect.Ptr {
+			ruleVal = ruleVal.Elem()
 		}
-	} else if len(extraData) > 1 {
-		logrus.Fatal("extraData 参数最多一个")
+		if ruleVal.Kind() != reflect.Struct {
+			panic("rule has to be a struct")
+		}
+		taskName = ruleVal.Type().Name()
+	case 1:
+		taskName = name[0]
+	default:
+		panic("age name's len can not large than 1.")
 	}
 
-	cmd := &Command{
-		ctx:      ctx,
-		callback: callback,
+	t := &Task{
+		rule: rule,
+		name: taskName,
 	}
 
-	return cmd
+	// set other option
+	t.setTimeout(rule)
+
+	links := t.rule.InitLinks()
+	for _, link := range links {
+		t.addCommandByUriString(link, t.rule.InitScrape)
+	}
+
+	return t
 }
 
-func (b *BaseTask) NewGetCommand(
-	uri string,
-	callback OnResponseCallback,
-	extraData ...H,
-) *Command {
-	return b.NewCommand("get", uri, callback, extraData...)
+func (t *Task) Name() string {
+	return t.name
 }
 
-func (b *BaseTask) AppendGetCommand(
-	url string,
-	callback OnResponseCallback,
-	extraData ...H,
-) {
-	cmd := b.NewGetCommand(url, callback, extraData...)
-	if cmd == nil {
-		return
-	}
-	b.appendCommand(cmd)
+func (t *Task) Wait() {
+	<-t.finishedChan()
 }
 
-func (b *BaseTask) AppendSaveCommand(url string, name ...string) {
-	if len(name) > 1 {
-		logrus.WithField("name", name).Fatal("name 参数个数不能大于 1")
-	}
+func (t *Task) finishedChan() chan struct{} {
+	t.fChanOnce.Do(func() {
+		t.fChan = make(chan struct{})
+	})
+	return t.fChan
+}
 
-	var fName string
-	if len(name) == 0 {
-		fName = path.Join("instance", utils.GetURLSaveFileName(url))
-	} else {
-		name[0] = strings.TrimSpace(name[0])
-		if len(name[0]) == 0 {
-			fName = path.Join("instance", utils.GetURLSaveFileName(url))
+func (t *Task) finish() {
+	select {
+	case _, ok := <-t.finishedChan():
+		if ok {
+			panic("bad usage of finished channel")
 		} else {
-			fName = path.Join("instance", name[0])
+			panic("double close finished channel")
 		}
-	}
-
-	b.AppendGetCommand(url, b.saveCommandCallback, H{
-		"FileName": fName,
-	})
-}
-
-func (b *BaseTask) saveCommandCallback(ctx *Context) {
-	if b.CommandDownloadLegal(ctx) {
-		// 使用 BaseTask 时, 可能会覆盖 CommandDownloadLegal 方法
-		// 所以在这里使用 BaseTask 重新验证一遍
-		logEntry := logrus.WithFields(ctx.LogrusFields())
-		val, ok := ctx.Get("FileName")
-		if !ok {
-			logEntry.Error("缺少 FileName 字段")
-			return
-		}
-
-		fileName, ok := val.(string)
-		if !ok {
-			logEntry.Error("缺少 FileName 字段")
-			return
-		}
-
-		err := os.MkdirAll(path.Dir(fileName), os.ModeDir)
-		if err != nil {
-			logEntry.WithFields(logrus.Fields{
-				"Error":    err,
-				"FileName": fileName,
-			}).Error("创建文件夹失败")
-			return
-		}
-
-		f, err := os.Create(fileName)
-		if err != nil {
-			logEntry.WithFields(logrus.Fields{
-				"Error":    err,
-				"FileName": fileName,
-			}).Error("创建文件失败")
-			return
-		}
-
-		wLen, err := f.Write(ctx.Response.Body())
-		if err != nil {
-			logEntry.WithFields(logrus.Fields{
-				"Error":    err,
-				"FileName": fileName,
-			}).Error("写入文件失败")
-		} else if wLen != len(ctx.Response.Body()) {
-			logEntry.WithFields(logrus.Fields{
-				"FileName":    fileName,
-				"WriteToFile": wLen,
-				"RespBodyLen": len(ctx.Response.Body()),
-			}).Error("写入文件字节数不一致")
-		}
-
-		logEntry.WithFields(logrus.Fields{
-			"FileName": fileName,
-			"WriteLen": wLen,
-		}).Info("保存到文件")
-		f.Close()
+	default:
+		t.readyCMDs = nil
+		t.runningCMDs = nil
+		close(t.finishedChan())
 	}
 }
 
-func (b *BaseTask) CommandComplete(command *Command) {
-	b.runningCMDsLocker.Lock()
-	defer b.runningCMDsLocker.Unlock()
+func (t *Task) increaseErrCnt() {
+	t.errCntLocker.Lock()
+	defer t.errCntLocker.Unlock()
+	t.errCnt++
+}
 
-	for i := range b.runningCMDs {
-		if b.runningCMDs[i] == command {
-			b.runningCMDs = append(b.runningCMDs[:i], b.runningCMDs[i+1:]...)
+func (t *Task) ErrCnt() int {
+	t.errCntLocker.Lock()
+	defer t.errCntLocker.Unlock()
+	return t.errCnt
+}
+
+func (t *Task) extractCommands() []*Command {
+	t.readyCMDsLocker.Lock()
+	t.runningCMDsLocker.Lock()
+	defer func() {
+		t.runningCMDs = append(t.runningCMDs, t.readyCMDs...)
+		t.readyCMDs = t.readyCMDs[0:0]
+		t.readyCMDsLocker.Unlock()
+		t.runningCMDsLocker.Unlock()
+	}()
+	return t.readyCMDs
+}
+
+func (t *Task) complete(cmd *Command) {
+	t.runningCMDsLocker.Lock()
+	defer t.runningCMDsLocker.Unlock()
+
+	cmdIndex := 0
+	for ; cmdIndex < len(t.runningCMDs); cmdIndex++ {
+		if t.runningCMDs[cmdIndex] == cmd {
 			break
 		}
 	}
+	if cmdIndex == len(t.runningCMDs) {
+		logrus.WithFields(cmd.ctx.LogrusFields()).Fatal("cmd is not in runningCMDs.")
+		return
+	}
 
-	b.readyCMDsLocker.Lock()
-	defer b.readyCMDsLocker.Unlock()
-	if len(b.runningCMDs)+len(b.readyCMDs) == 0 {
-		close(b.getCompleteChan())
-		logrus.WithFields(logrus.Fields{
-			"Task": b.GetTaskName(),
-		}).Info("Task 完成")
+	t.runningCMDs = append(t.runningCMDs[:cmdIndex], t.runningCMDs[cmdIndex+1:]...)
+
+	//t.completedCMDsLocker.Lock()
+	//t.completedCMDs = append(t.completedCMDs, cmd)
+	//t.completedCMDsLocker.Unlock()
+
+	t.readyCMDsLocker.Lock()
+	defer t.readyCMDsLocker.Unlock()
+	if len(t.readyCMDs)+len(t.runningCMDs) == 0 {
+		t.finish()
 	}
 }
 
-func (b *BaseTask) CommandDownloadLegal(ctx *Context) bool {
-	if ctx == nil || ctx.Response == nil {
-		return false
+func (t *Task) addCommands(cmds ...*Command) {
+	t.readyCMDsLocker.Lock()
+	defer t.readyCMDsLocker.Unlock()
+	t.readyCMDs = append(t.readyCMDs, cmds...)
+}
+
+func (t *Task) retryCommand(cmd *Command) {
+	t.runningCMDsLocker.Lock()
+	defer t.runningCMDsLocker.Unlock()
+
+	cmdIndex := 0
+	for ; cmdIndex < len(t.runningCMDs); cmdIndex++ {
+		if t.runningCMDs[cmdIndex] == cmd {
+			break
+		}
 	}
-	return ctx.RespErr == nil && ctx.Response.StatusCode() == 200
+	if cmdIndex == len(t.runningCMDs) {
+		logrus.WithFields(cmd.ctx.LogrusFields()).Fatal("cmd is not in runningCMDs.")
+		return
+	}
+
+	t.runningCMDs = append(t.runningCMDs[:cmdIndex], t.runningCMDs[cmdIndex+1:]...)
+
+	t.readyCMDsLocker.Lock()
+	defer t.readyCMDsLocker.Unlock()
+	t.readyCMDs = append(t.readyCMDs, cmd)
 }
 
-func (b *BaseTask) IncreaseErrCnt() {
-	b.errCntLocker.Lock()
-	defer b.errCntLocker.Unlock()
-	b.errCnt++
+func (t *Task) addCommandByUri(uri *fasthttp.URI, callback OnResponseCallback, contextInfo ...H) {
+	t.addCommands(newCommandByURI(uri, callback, t, contextInfo...))
 }
 
-func (b *BaseTask) GetErrCnt() int {
-	b.errCntLocker.Lock()
-	defer b.errCntLocker.Unlock()
-	return b.errCnt
+func (t *Task) addCommandByUriString(uri string, callback OnResponseCallback, contextInfo ...H) {
+	t.addCommands(newCommandByURIString(uri, callback, t, contextInfo...))
 }
 
-func (b *BaseTask) GetBaseTask() *BaseTask {
-	return b
+func (t *Task) setTimeout(ruleInterface interface{}) {
+	timeoutRule, ok := ruleInterface.(TimeoutRule)
+	if ok {
+		t.requestTimeout = timeoutRule.RequestTimeout()
+	} else {
+		t.requestTimeout = DEFAULT_REQUEST_TIMEOUT
+	}
 }
