@@ -42,7 +42,7 @@ func (c *Context) Set(key string, v interface{}) {
 }
 
 func (c *Context) LogrusFields() logrus.Fields {
-	return logrus.Fields{
+	fields := logrus.Fields{
 		"TaskName":    c.task.Name(),
 		"Request":     c.Request,
 		"StatusCode":  c.Response.StatusCode(),
@@ -50,6 +50,8 @@ func (c *Context) LogrusFields() logrus.Fields {
 		"RespErr":     c.RespErr,
 		"Keys":        c.keys,
 	}
+
+	return fields
 }
 
 func (c *Context) Follow(uri string, callback OnResponseCallback, info ...H) {
@@ -204,6 +206,17 @@ func (e *HTMLElement) Attr(key string) string {
 		}).Panic()
 	}
 
+	return attr
+}
+
+func (e *HTMLElement) MayAttr(key string) string {
+	var attr = ""
+	for _, attribute := range e.attributes {
+		if attribute.Key == key {
+			attr = attribute.Val
+			break
+		}
+	}
 	return attr
 }
 
