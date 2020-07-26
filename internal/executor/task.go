@@ -52,8 +52,8 @@ type Task struct {
 	completedCMDSetLocker sync.Mutex
 	completedCMDSet       sets.Set
 
-	failureCMDsLocker sync.Mutex
-	failureCMDSet     sets.Set
+	failureCMDSetLocker sync.Mutex
+	failureCMDSet       sets.Set
 
 	fChanOnce sync.Once
 	fChan     chan struct{}
@@ -172,9 +172,22 @@ func (t *Task) addCommands(cmds ...*Command) {
 	t.readyCMDSet.Add(vals...)
 }
 
+// running command result is failure
+// move command from runningCMDSet to failureCMDSet
 func (t *Task) failure(cmd *Command) {
-	// todo
-	t.complete(cmd)
+	t.runningCMDSetLocker.Lock()
+	defer t.runningCMDSetLocker.Unlock()
+
+	if t.runningCMDSet.Contains(cmd) {
+		t.runningCMDSet.Remove(cmd)
+	} else {
+		return
+	}
+
+	t.failureCMDSetLocker.Lock()
+	defer t.failureCMDSetLocker.Unlock()
+
+	t.failureCMDSet.Add(cmd)
 }
 
 // runningCMDBackToReady
@@ -241,12 +254,13 @@ func (t *Task) setOnProcessErrorCallback(rule interface{}) {
 }
 
 func defaultOnProcessErrorCallback(cmd *Command, err error) {
-	logEntry := logrus.WithFields(cmd.ctx.LogrusFields()).WithField("Error", err)
+	logEntry := logrus.WithFields(cmd.ctx.LogrusFields()).WithFields(logrus.Fields{
+		"Error": err,
+		"Proxy": cmd.ctx.downloader.proxy(),
+	})
 	switch err {
 	case ERR_PROCESS_RETRY:
-		logrus.WithFields(logrus.Fields{
-			"Proxy": cmd.ctx.downloader.proxy(),
-		}).WithFields(cmd.ctx.LogrusFields()).Errorf("command require retry.")
+		logEntry.Error("command require retry.")
 		cmd.ctx.downloader.banned(cmd.ctx)
 		cmd.ctx.task.runningCMDBackToReady(cmd)
 	case ERR_PROCESS_PARSE_DOC_FAILURE:
