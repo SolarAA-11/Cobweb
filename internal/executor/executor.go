@@ -33,10 +33,10 @@ func NewDefaultNoProxyExecutor() *Executor {
 func NewDefaultExecutor() *Executor {
 	return NewExecutor(
 		&proxyDownloaderFactory{},
-		10,
+		50,
 		5,
 		10,
-		time.Second*5,
+		time.Second*3,
 	)
 }
 
@@ -47,6 +47,11 @@ func NewExecutor(
 	maxErrCnt int,
 	reqTimeInterval time.Duration,
 ) *Executor {
+	if reqTimeInterval >= time.Second {
+		reqTimeInterval -= time.Second
+
+	}
+
 	downloadChan := make(chan *Command)
 	processChan := make(chan *Command)
 	dm := newDownloaderManager(
@@ -85,7 +90,6 @@ func (e *Executor) AcceptRule(rule BaseRule) *Task {
 
 		cmds := task.extractCommands()
 		for _, cmd := range cmds {
-			logrus.WithFields(cmd.ctx.LogrusFields()).Debug("Accept Command")
 			e.downloadChan <- cmd
 		}
 		return task

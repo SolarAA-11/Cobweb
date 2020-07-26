@@ -1,9 +1,7 @@
 package douban
 
 import (
-	"bytes"
 	"fmt"
-	"github.com/PuerkitoBio/goquery"
 	"github.com/SolarDomo/Cobweb/internal/executor"
 	"strings"
 )
@@ -15,6 +13,7 @@ import (
 	[排名].[电影名]
 文件夹
 文件中保存电影封面 cover.jpg
+电影详细信息保存到 info.json
 */
 
 type DoubanRule struct {
@@ -22,50 +21,32 @@ type DoubanRule struct {
 
 func (r *DoubanRule) InitLinks() []string {
 	links := make([]string, 0, 10)
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 10; i++ {
 		links = append(links, fmt.Sprintf("https://movie.douban.com/top250?start=%d&filter=", i*25))
 	}
 	return links
 }
 
 func (r *DoubanRule) InitScrape(ctx *executor.Context) {
-	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(ctx.Response.Body()))
-	if err != nil {
-		fmt.Println("BadRequest")
-		ctx.Retry()
-	}
-	l := doc.Find("#content > div > div.article > ol > li > div").Each(func(i int, s *goquery.Selection) {
-		link, ok := s.Find("div.pic > a").Attr("href")
-		if !ok {
-			fmt.Println("BadRequest")
-			ctx.Retry()
+	ctx.HTML("#content > div > div.article > ol > li", func(element *executor.HTMLElement) {
+		rank := element.ChildText("div.pic em")
+		title := element.ChildText("span.title")
+		detailLink := element.ChildAttr("div.pic a", "href")
+		if strings.TrimSpace(rank) != "65" {
+			ctx.Follow(detailLink, r.scrapeDetailPage, executor.H{
+				"Rank":  rank,
+				"Title": title,
+			})
 		}
-
-		rank := s.Find("div.pic > em").Text()
-		ctx.Follow(link, r.scrapeDetailPage, executor.H{
-			"rank": rank,
-		})
-	}).Length()
-	if l == 0 {
-		fmt.Println("BadRequest")
-		ctx.Retry()
-	}
+	})
 }
 
 func (r *DoubanRule) scrapeDetailPage(ctx *executor.Context) {
-	doc := ctx.Doc()
-	if doc == nil {
-		ctx.Retry()
-	}
-
-	title := doc.Find("#content > h1 > span:first-child").Text()
-	if len(strings.TrimSpace(title)) == 0 {
-		ctx.Retry()
-	}
-	rank, _ := ctx.Get("rank")
-	coverLink, ok := doc.Find("#mainpic > a > img").Attr("src")
-	if !ok {
-		ctx.Retry()
-	}
-	ctx.SaveResource(coverLink, fmt.Sprintf("douban/%v.%v/cover", rank, title))
+	ctx.HTML("", func(element *executor.HTMLElement) {
+		title, _ := ctx.Get("Title")
+		rank, _ := ctx.Get("Rank")
+		picLink := element.ChildAttr("#mainpic > a > img", "src")
+		year := element.ChildText("#content > h1 > span.year")
+		ctx.SaveResource(picLink, fmt.Sprintf("douban/%v.%v.%v", rank, year, title))
+	})
 }

@@ -75,10 +75,6 @@ func (c *Context) downloaderValid() bool {
 }
 
 func (c *Context) Retry() {
-	logrus.WithFields(logrus.Fields{
-		"Proxy": c.downloader.proxy(),
-	}).WithFields(c.LogrusFields()).Debug("Context require retry.")
-	c.downloader.banned(c)
 	panic(ERR_PROCESS_RETRY)
 }
 
@@ -91,9 +87,16 @@ func (c *Context) Doc() (*goquery.Document, error) {
 }
 
 func (c *Context) html(goquerySelector string, callback func(element *HTMLElement)) int {
+	if goquerySelector == "" {
+		goquerySelector = "html"
+	}
+
 	doc, err := c.Doc()
 	if err != nil || doc == nil {
-		logrus.WithFields(c.LogrusFields()).WithField("Error", err).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+		logrus.WithFields(c.LogrusFields()).WithFields(logrus.Fields{
+			"GpqueryParseError":                  err,
+			LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY: ERR_PROCESS_PARSE_DOC_FAILURE,
+		}).Panic()
 	}
 
 	nodeCount := doc.Find(goquerySelector).Each(func(index int, selection *goquery.Selection) {
@@ -107,7 +110,10 @@ func (c *Context) html(goquerySelector string, callback func(element *HTMLElemen
 func (c *Context) HTML(goquerySelector string, callback func(element *HTMLElement)) {
 	nodeCount := c.html(goquerySelector, callback)
 	if nodeCount == 0 {
-		logrus.WithFields(c.LogrusFields()).WithFields(logrus.Fields{}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+		logrus.WithFields(c.LogrusFields()).WithFields(logrus.Fields{
+			"selector":                           goquerySelector,
+			LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY: ERR_PROCESS_PARSE_DOC_FAILURE,
+		}).Panic()
 	}
 }
 
@@ -193,8 +199,9 @@ func (e *HTMLElement) Attr(key string) string {
 	}
 	if !found {
 		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
-			"AttributeKey": key,
-		}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+			"AttributeKey":                       key,
+			LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY: ERR_PROCESS_PARSE_DOC_FAILURE,
+		}).Panic()
 	}
 
 	return attr
@@ -206,8 +213,9 @@ func (e *HTMLElement) ChildText(selector string) string {
 	childNode := e.dom.Find(selector)
 	if childNode.Length() == 0 {
 		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
-			"Selector": selector,
-		}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+			"Selector":                           selector,
+			LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY: ERR_PROCESS_PARSE_DOC_FAILURE,
+		}).Panic()
 	}
 	return childNode.First().Text()
 }
@@ -225,8 +233,9 @@ func (e *HTMLElement) ChildTexts(selector string) []string {
 	texts := e.MayChildTexts(selector)
 	if len(texts) == 0 {
 		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
-			"Selector": selector,
-		}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+			"Selector":                           selector,
+			LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY: ERR_PROCESS_PARSE_DOC_FAILURE,
+		}).Panic()
 	}
 	return texts
 }
@@ -244,9 +253,10 @@ func (e *HTMLElement) ChildAttr(selector, key string) string {
 	attr, ok := e.dom.Find(selector).First().Attr(key)
 	if !ok {
 		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
-			"Selector":     selector,
-			"AttributeKey": key,
-		}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+			"Selector":                           selector,
+			"AttributeKey":                       key,
+			LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY: ERR_PROCESS_PARSE_DOC_FAILURE,
+		}).Panic()
 	}
 	return attr
 }
@@ -268,17 +278,19 @@ func (e *HTMLElement) ChildAttrs(selector, key string) []string {
 		attr, ok := selection.Attr(key)
 		if !ok {
 			logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
-				"Selector":     selector,
-				"AttributeKey": key,
-			}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+				"Selector":                           selector,
+				"AttributeKey":                       key,
+				LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY: ERR_PROCESS_PARSE_DOC_FAILURE,
+			}).Panic()
 		}
 		return attr
 	})
 	if len(attrs) == 0 {
 		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
-			"Selector":     selector,
-			"AttributeKey": key,
-		}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+			"Selector":                           selector,
+			"AttributeKey":                       key,
+			LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY: ERR_PROCESS_PARSE_DOC_FAILURE,
+		}).Panic()
 	}
 	return attrs
 }
@@ -307,7 +319,10 @@ func (e *HTMLElement) forEach(selector string, callback func(element *HTMLElemen
 func (e *HTMLElement) ForEach(selector string, callback func(element *HTMLElement)) {
 	nodeLen := e.forEach(selector, callback)
 	if nodeLen == 0 {
-		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
+			"Selector":                           selector,
+			LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY: ERR_PROCESS_PARSE_DOC_FAILURE,
+		}).Panic()
 	}
 }
 
