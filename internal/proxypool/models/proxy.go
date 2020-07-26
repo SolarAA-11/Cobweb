@@ -18,7 +18,7 @@ const (
 type Proxy struct {
 	ID int `gorm:"PRIMARY_KEY;AUTO_INCREMENT;"`
 
-	Url       string
+	Host      string
 	Port      string
 	HTTPS     bool
 	Anonymity AnonymityLevel
@@ -31,13 +31,13 @@ func (this *Proxy) GetProxyURL() string {
 	if this.HTTPS {
 		schema = "https"
 	}
-	return fmt.Sprintf("%s://%s:%s", schema, this.Url, this.Port)
+	return fmt.Sprintf("%s://%s:%s", schema, this.Host, this.Port)
 }
 
 func (this *Proxy) FastHTTPDialHTTPProxy() fasthttp.DialFunc {
-	return fasthttpproxy.FasthttpHTTPDialer(fmt.Sprintf("%s:%s", this.Url, this.Port))
+	return fasthttpproxy.FasthttpHTTPDialer(fmt.Sprintf("%s:%s", this.Host, this.Port))
 }
 
 func (this *Proxy) Equal(proxy *Proxy) bool {
-	return this.Url == proxy.Url && this.Port == proxy.Port
+	return this.Host == proxy.Host && this.Port == proxy.Port
 }
