@@ -1,15 +1,15 @@
 package executor
 
 import (
+	"bytes"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/net/html"
-
-	"bytes"
 	"io/ioutil"
 	"os"
 	"path"
+	"reflect"
 )
 
 type H map[string]interface{}
@@ -78,6 +78,43 @@ func (c *Context) downloaderValid() bool {
 
 func (c *Context) Retry() {
 	panic(ERR_PROCESS_RETRY)
+}
+
+// send item to pipeline
+// argument item must be struct or pointer of struct
+// it not method panic
+func (c *Context) Item(item interface{}) {
+	// check item type
+	// struct or pointer of struct
+	itemVal := reflect.ValueOf(item)
+	if itemVal.Kind() == reflect.Struct || (itemVal.Kind() == reflect.Ptr && itemVal.Elem().Kind() == reflect.Struct) {
+		// iterate item's field
+		// only Capital name fields added to pipeline item
+		if itemVal.Kind() == reflect.Ptr {
+			itemVal = itemVal.Elem()
+		}
+		pipeItem := &Item{
+			task: c.task,
+			data: make(map[string]string),
+		}
+
+		itemType := itemVal.Type()
+		itemFieldCnt := itemType.NumField()
+		for i := 0; i < itemFieldCnt; i++ {
+			fieldType := itemType.Field(i)
+			if fieldType.Type.Kind() == reflect.String && fieldType.Name[0] >= 'A' && fieldType.Name[0] <= 'Z' {
+				fieldVal := itemVal.Field(i)
+				pipeItem.data[fieldType.Name] = fieldVal.String()
+			}
+		}
+
+		c.task.addItem(pipeItem)
+	} else {
+		logrus.WithFields(c.LogrusFields()).WithFields(logrus.Fields{
+			"Item":                               item,
+			LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY: ERR_PROCESS_ITEM_TYPE_INVALID,
+		}).Panic("item type invalid")
+	}
 }
 
 func (c *Context) Doc() (*goquery.Document, error) {

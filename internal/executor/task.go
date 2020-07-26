@@ -36,6 +36,10 @@ type TimeoutRule interface {
 	RequestTimeout() time.Duration
 }
 
+type PipelineRule interface {
+	Pipelines() []Pipeline
+}
+
 type Task struct {
 	rule           BaseRule
 	name           string
@@ -58,6 +62,11 @@ type Task struct {
 	fChanOnce sync.Once
 	fChan     chan struct{}
 
+	itemsLocker sync.Mutex
+	items       sets.Set
+
+	pipes []Pipeline
+
 	errCntLocker sync.Mutex
 	errCnt       int
 }
@@ -69,12 +78,14 @@ func newTask(rule BaseRule, name ...string) *Task {
 		runningCMDSet:   hashset.New(),
 		completedCMDSet: hashset.New(),
 		failureCMDSet:   hashset.New(),
+		items:           hashset.New(),
 	}
 
 	// set other option
 	t.setTaskName(rule, name...)
 	t.setTimeout(rule)
 	t.setOnProcessErrorCallback(rule)
+	t.setPipeline(rule)
 
 	// add init commands
 	links := t.rule.InitLinks()
@@ -115,6 +126,33 @@ func (t *Task) finish() {
 		t.failureCMDSet.Clear()
 		close(t.finishedChan())
 	}
+}
+
+func (t *Task) addItem(item *Item) {
+	t.itemsLocker.Lock()
+	defer t.itemsLocker.Unlock()
+	t.items.Add(item)
+}
+
+func (t *Task) extractItems() []*Item {
+	t.itemsLocker.Lock()
+	defer func() {
+		t.items.Clear()
+		t.itemsLocker.Unlock()
+	}()
+	items := make([]*Item, 0, t.items.Size())
+	itemVals := t.items.Values()
+	for _, val := range itemVals {
+		item, ok := val.(*Item)
+		if ok {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
+func (t *Task) pipelines() []Pipeline {
+	return t.pipes
 }
 
 func (t *Task) increaseErrCnt() {
@@ -244,6 +282,17 @@ func (t *Task) setTaskName(rule interface{}, name ...string) {
 	t.name = taskName
 }
 
+func (t *Task) setPipeline(rule interface{}) {
+	pipeRule, ok := rule.(PipelineRule)
+	if ok {
+		t.pipes = pipeRule.Pipelines()
+	} else {
+		t.pipes = []Pipeline{
+			&StdoutPipeline{},
+		}
+	}
+}
+
 func (t *Task) setOnProcessErrorCallback(rule interface{}) {
 	processErrRule, ok := rule.(ProcessErrorRule)
 	if ok {
@@ -260,11 +309,11 @@ func defaultOnProcessErrorCallback(cmd *Command, err error) {
 	})
 	switch err {
 	case ERR_PROCESS_RETRY:
-		logEntry.Error("command require retry.")
+		//logEntry.Error("command require retry.")
 		cmd.ctx.downloader.banned(cmd.ctx)
 		cmd.ctx.task.runningCMDBackToReady(cmd)
 	case ERR_PROCESS_PARSE_DOC_FAILURE:
-		logEntry.Error("doc parse fail")
+		//logEntry.Error("doc parse fail")
 		cmd.ctx.downloader.banned(cmd.ctx)
 		cmd.ctx.task.runningCMDBackToReady(cmd)
 	default:

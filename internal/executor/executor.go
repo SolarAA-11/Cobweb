@@ -118,8 +118,14 @@ func (e *Executor) Stop() {
 func (e *Executor) dropCMDChan(ch <-chan *Command, chName string) {
 	e.wg.Add(1)
 	defer e.wg.Done()
+
+	droppedCMDCount := 0
 	for cmd := range ch {
 		logrus.WithFields(cmd.ctx.LogrusFields()).WithField("ChanName", chName).Debug("Drop Command")
+		droppedCMDCount++
 	}
-	logrus.WithField("ChanName", chName).Info("Drop Channel Finished, Channel Closed")
+	logrus.WithFields(logrus.Fields{
+		"ChanName":       chName,
+		"DropedCMDCount": droppedCMDCount,
+	}).Info("Drop Channel Finished, Channel Closed")
 }

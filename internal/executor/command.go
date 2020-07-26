@@ -60,7 +60,6 @@ func (c *Command) Retry() {
 // after fini
 func (c *Command) process() {
 	defer c.processDeferFunc()
-
 	c.callback(c.ctx)
 }
 
