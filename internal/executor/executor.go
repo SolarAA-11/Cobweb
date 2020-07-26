@@ -33,7 +33,7 @@ func NewDefaultNoProxyExecutor() *Executor {
 func NewDefaultExecutor() *Executor {
 	return NewExecutor(
 		&proxyDownloaderFactory{},
-		50,
+		100,
 		5,
 		10,
 		time.Second*3,

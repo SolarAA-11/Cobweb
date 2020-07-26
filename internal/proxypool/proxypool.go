@@ -2,15 +2,16 @@ package proxypool
 
 import (
 	"encoding/json"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/SolarDomo/Cobweb/internal/executor"
 	"github.com/SolarDomo/Cobweb/internal/proxypool/models"
 	"github.com/SolarDomo/Cobweb/internal/proxypool/storage"
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 type ProxyPool struct {
@@ -114,7 +115,7 @@ func (p *ProxyPool) checkProxyPool() {
 			"TotalProxyCount":     len(proxies),
 			"ActivatedProxyCount": activatedCounter,
 			"TimeElapsed":         time.Since(startTime),
-		}).Info("ProxyPool check routine has been stopped.")
+		}).Debug("ProxyPool check routine has been stopped.")
 	} else {
 		logrus.WithFields(logrus.Fields{
 			"TotalProxyCount":     len(proxies),
@@ -163,7 +164,7 @@ func (p *ProxyPool) checkProxy(
 					logrus.WithFields(logrus.Fields{
 						"Proxy":    proxy,
 						"RespBody": string(body),
-					}).Info("Activate Proxy")
+					}).Debug("Activate Proxy")
 					return
 				}
 			}
@@ -174,7 +175,7 @@ func (p *ProxyPool) checkProxy(
 		"Proxy":    proxy,
 		"RespBody": string(body),
 		"Error":    err,
-	}).Info("DeActivate Proxy")
+	}).Debug("DeActivate Proxy")
 
 	err = storage.Singleton().DeactivateProxy(proxy)
 	if err != nil {

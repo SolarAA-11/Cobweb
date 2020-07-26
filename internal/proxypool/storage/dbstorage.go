@@ -45,7 +45,7 @@ func (this *dbProxyStorage) GetProxy(proxy *models.Proxy) (*models.Proxy, error)
 	}
 
 	proxyInDB := &models.Proxy{}
-	err := this.dbConn.Model(proxy).Where(&models.Proxy{Url: proxy.Url, Port: proxy.Port}).Find(proxyInDB).Error
+	err := this.dbConn.Model(proxy).Where(&models.Proxy{Host: proxy.Host, Port: proxy.Port}).Find(proxyInDB).Error
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func (this *dbProxyStorage) HasProxy(proxy *models.Proxy) (bool, error) {
 	}
 
 	proxyCount := 0
-	err := this.dbConn.Model(proxy).Where(&models.Proxy{Url: proxy.Url, Port: proxy.Port}).Count(&proxyCount).Error
+	err := this.dbConn.Model(proxy).Where(&models.Proxy{Host: proxy.Host, Port: proxy.Port}).Count(&proxyCount).Error
 	if err != nil {
 		return false, err
 	} else {
