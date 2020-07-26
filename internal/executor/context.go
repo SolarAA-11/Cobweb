@@ -1,19 +1,15 @@
 package executor
 
 import (
-	"bytes"
-	"errors"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/net/html"
+
+	"bytes"
 	"io/ioutil"
-	"math"
 	"os"
 	"path"
-)
-
-var (
-	ERR_RETRY = errors.New("command need retry")
 )
 
 type H map[string]interface{}
@@ -71,28 +67,52 @@ func (c *Context) Follow(uri string, callback OnResponseCallback, info ...H) {
 	c.task.addCommandByUriString(uri, callback, c.keys)
 }
 
-// check if command's download response data is valid
-func (c *Context) responseValid() bool {
-	if c.RespErr != nil {
-		return false
-	}
-	return c.Response != nil && c.Response.StatusCode() == 200
+// check if downloader work expected, for example proxy can fetch certain content
+// but host ban this proxy is not concerned as invalid situation, i think proxy work normal
+// it may can fetch other host's resource, so if context's RespErr which represent whether proxy work well.
+func (c *Context) downloaderValid() bool {
+	return c.RespErr == nil
 }
 
 func (c *Context) Retry() {
 	logrus.WithFields(logrus.Fields{
 		"Proxy": c.downloader.proxy(),
 	}).WithFields(c.LogrusFields()).Debug("Context require retry.")
-	c.downloader.increaseErrCnt(math.MaxInt32)
-	panic(ERR_RETRY)
+	c.downloader.banned(c)
+	panic(ERR_PROCESS_RETRY)
 }
 
-func (c *Context) Doc() *goquery.Document {
+func (c *Context) Doc() (*goquery.Document, error) {
 	doc, err := goquery.NewDocumentFromReader(bytes.NewReader(c.Response.Body()))
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return doc
+	return doc, nil
+}
+
+func (c *Context) html(goquerySelector string, callback func(element *HTMLElement)) int {
+	doc, err := c.Doc()
+	if err != nil || doc == nil {
+		logrus.WithFields(c.LogrusFields()).WithField("Error", err).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+	}
+
+	nodeCount := doc.Find(goquerySelector).Each(func(index int, selection *goquery.Selection) {
+		e := newHTMLElementFromSelectionNode(selection, selection.Nodes[0], c)
+		callback(e)
+	}).Length()
+
+	return nodeCount
+}
+
+func (c *Context) HTML(goquerySelector string, callback func(element *HTMLElement)) {
+	nodeCount := c.html(goquerySelector, callback)
+	if nodeCount == 0 {
+		logrus.WithFields(c.LogrusFields()).WithFields(logrus.Fields{}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+	}
+}
+
+func (c *Context) MayHTML(goquerySelector string, callback func(element *HTMLElement)) {
+	c.html(goquerySelector, callback)
 }
 
 func (c *Context) SaveResource(link, fileName string) {
@@ -124,4 +144,173 @@ func saveResourceCallback(ctx *Context) {
 	logrus.WithFields(logrus.Fields{
 		"FileName": fileName,
 	}).WithFields(ctx.LogrusFields()).Info("Resource saved.")
+}
+
+type HTMLElement struct {
+	// element's tag name
+	name string
+
+	// element's content text
+	text string
+
+	// element's attributes
+	attributes []html.Attribute
+
+	dom *goquery.Selection
+
+	ctx *Context
+}
+
+func newHTMLElementFromSelectionNode(s *goquery.Selection, node *html.Node, ctx *Context) *HTMLElement {
+	return &HTMLElement{
+		name:       node.Data,
+		text:       goquery.NewDocumentFromNode(node).Text(),
+		attributes: node.Attr,
+		dom:        s,
+		ctx:        ctx,
+	}
+}
+
+func (e *HTMLElement) Name() string {
+	return e.name
+}
+
+func (e *HTMLElement) Text() string {
+	return e.text
+}
+
+func (e *HTMLElement) Attr(key string) string {
+	var (
+		attr  = ""
+		found = false
+	)
+	for _, attribute := range e.attributes {
+		if attribute.Key == key {
+			found = true
+			attr = attribute.Val
+			break
+		}
+	}
+	if !found {
+		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
+			"AttributeKey": key,
+		}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+	}
+
+	return attr
+}
+
+// return the content string of first child which satisfied selector.
+// if no element found, method panic
+func (e *HTMLElement) ChildText(selector string) string {
+	childNode := e.dom.Find(selector)
+	if childNode.Length() == 0 {
+		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
+			"Selector": selector,
+		}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+	}
+	return childNode.First().Text()
+}
+
+// return the content string of first child which satisfied selector.
+// if no element found, method returns empty string
+func (e *HTMLElement) MayChildText(selector string) string {
+	return e.dom.Find(selector).First().Text()
+}
+
+// return array of content string of every child element which satisfied selector.
+// method assert at least one element satisfy selector
+// if not child element found, method panics
+func (e *HTMLElement) ChildTexts(selector string) []string {
+	texts := e.MayChildTexts(selector)
+	if len(texts) == 0 {
+		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
+			"Selector": selector,
+		}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+	}
+	return texts
+}
+
+// return array of content string of every child element which satisfied selector.
+func (e *HTMLElement) MayChildTexts(selector string) []string {
+	return e.dom.Find(selector).Map(func(_ int, selection *goquery.Selection) string {
+		return selection.Text()
+	})
+}
+
+// return attribute value of child element which satisfied selector.
+// if acquired attribute is't exist, method panic.
+func (e *HTMLElement) ChildAttr(selector, key string) string {
+	attr, ok := e.dom.Find(selector).First().Attr(key)
+	if !ok {
+		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
+			"Selector":     selector,
+			"AttributeKey": key,
+		}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+	}
+	return attr
+}
+
+// return attribute value of child element
+// return empty string if child does't exist or attribute does't too.
+func (e *HTMLElement) MayChildAttr(selector, key string) string {
+	attr, ok := e.dom.Find(selector).First().Attr(key)
+	if !ok {
+		return ""
+	}
+	return attr
+}
+
+// return attributes of children which satisfies selector
+// if no child found or some child does't have required attribute, method panic
+func (e *HTMLElement) ChildAttrs(selector, key string) []string {
+	attrs := e.dom.Find(selector).Map(func(_ int, selection *goquery.Selection) string {
+		attr, ok := selection.Attr(key)
+		if !ok {
+			logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
+				"Selector":     selector,
+				"AttributeKey": key,
+			}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+		}
+		return attr
+	})
+	if len(attrs) == 0 {
+		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{
+			"Selector":     selector,
+			"AttributeKey": key,
+		}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+	}
+	return attrs
+}
+
+// return attributes of children which satisfies selector
+// if some child does't have required attribute, the empty string represents its attribute
+// May empty array or empty attribute
+func (e *HTMLElement) MayChildAttrs(selector, key string) []string {
+	attrs := e.dom.Find(selector).Map(func(_ int, selection *goquery.Selection) string {
+		attr, ok := selection.Attr(key)
+		if !ok {
+			return ""
+		}
+		return attr
+	})
+	return attrs
+}
+
+func (e *HTMLElement) forEach(selector string, callback func(element *HTMLElement)) int {
+	return e.dom.Find(selector).Each(func(_ int, selection *goquery.Selection) {
+		element := newHTMLElementFromSelectionNode(selection, selection.Nodes[0], e.ctx)
+		callback(element)
+	}).Length()
+}
+
+func (e *HTMLElement) ForEach(selector string, callback func(element *HTMLElement)) {
+	nodeLen := e.forEach(selector, callback)
+	if nodeLen == 0 {
+		logrus.WithFields(e.ctx.LogrusFields()).WithFields(logrus.Fields{}).Panic(ERR_PROCESS_PARSE_DOC_FAILURE)
+	}
+}
+
+func (e *HTMLElement) MayForEach(selector string, callback func(element *HTMLElement)) {
+	e.forEach(selector, callback)
 }
