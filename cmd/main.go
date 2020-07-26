@@ -10,8 +10,8 @@ import (
 
 func main() {
 	logrus.SetLevel(logrus.DebugLevel)
-	e := executor.NewDefaultExecutor()
 	startTime := time.Now()
+	e := executor.NewDefaultExecutor()
 	t := e.AcceptRule(&douban.DoubanRule{})
 	t.Wait()
 	fmt.Println("耗时: ", time.Since(startTime))

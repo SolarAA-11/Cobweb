@@ -16,12 +16,6 @@ import (
 	"time"
 )
 
-var (
-	ERR_CONCURRENT_REQUEST_LIMIT = errors.New("concurrent request limit")
-	ERR_BANNED_HOST              = errors.New("banned host")
-	ERR_REQUEST_INTERVAL_LIMIT   = errors.New("request time interval")
-)
-
 type downloaderManager struct {
 	dFactory downloaderFactory
 
@@ -126,8 +120,7 @@ func (d *downloaderManager) downloadRoutine(id int) {
 				}
 
 				logEntry.WithFields(cmd.ctx.LogrusFields()).WithFields(logrus.Fields{
-					"Proxy":           downloader.proxy(),
-					"LastRequestTime": downloader.lastReqTime(cmd),
+					"Proxy": downloader.proxy(),
 				}).Debug("Finish One Command Download")
 				d.outCMDCh <- cmd
 			} else {
@@ -137,8 +130,7 @@ func (d *downloaderManager) downloadRoutine(id int) {
 				}
 
 				logEntry.WithFields(cmd.ctx.LogrusFields()).WithFields(logrus.Fields{
-					"Proxy":           downloader.proxy(),
-					"LastRequestTime": downloader.lastReqTime(cmd),
+					"Proxy": downloader.proxy(),
 				}).Debug("Failure One Command Download")
 				d.inCMDCh <- cmd
 			}

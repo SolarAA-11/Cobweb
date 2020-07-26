@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"errors"
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
 	"runtime"
@@ -63,43 +62,37 @@ func (c *Command) process() {
 	c.callback(c.ctx)
 }
 
+// if process panics by cobweb inner method
+// recover will return processPanicInfo's pointer
+type processPanicInfo struct {
+	// logrusInfo save some information about panic situation
+	// like, CSS selector string for ERR_PARSE_DOC_FAILURE
+	// and Context Info
+	logrusInfo *logrus.Entry
+	pErr       ProcessError
+}
+
+func newProcessPanicInfo(logrusInfo *logrus.Entry, err ProcessError) *processPanicInfo {
+	pInfo := &processPanicInfo{
+		logrusInfo: logrusInfo,
+		pErr:       err,
+	}
+	return pInfo
+}
+
 func (c *Command) processDeferFunc() {
 	panicVal := recover()
 	if panicVal != nil {
-		// recover from panic
+		// process panics!
 		switch panicVal.(type) {
-		case error:
-			c.ctx.task.onProcessError(c, panicVal.(error))
-		case *logrus.Entry:
-			// panic from logrus.Panic
-			entry := panicVal.(*logrus.Entry)
-			panicErrVal, ok := entry.Data[LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY]
-			if !ok {
-				// not panic from process error defined
-				c.ctx.task.onProcessError(c, errors.New(entry.Message))
-			} else {
-				panicErr, ok := panicErrVal.(error)
-				if ok {
-					c.ctx.task.onProcessError(c, panicErr)
-				} else {
-					// logrus fields key LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY
-					// its value is not error type
-					// fatal situation
-					logrus.WithFields(c.ctx.LogrusFields()).WithFields(logrus.Fields{
-						"PanicVal":                             panicVal,
-						"LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY": panicErr,
-					}).Fatal("LOGRUS_PROCESS_ERROR_PANIC_FIELD_KEY Value is not error type")
-				}
-			}
+		case *processPanicInfo:
+			pInfo, _ := panicVal.(*processPanicInfo)
+			c.ctx.task.onProcessError(c, pInfo.pErr, pInfo.logrusInfo)
 		default:
-			logrus.WithFields(c.ctx.LogrusFields()).WithFields(logrus.Fields{
-				"PanicVal": panicVal,
-			}).Error("Process Panic with unexpect situation, we recover routine and think this command is failed.")
-			c.ctx.task.failure(c)
+			c.ctx.task.onProcessError(c, PROCESS_ERR_UNKNOWN, logrus.WithField("OriginalError", panicVal))
 		}
 	} else {
-		// process normal return
+		// process finished
 		c.ctx.task.complete(c)
 	}
-
 }

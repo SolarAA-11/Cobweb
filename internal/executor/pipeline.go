@@ -18,6 +18,3 @@ type StdoutPipeline struct{}
 func (p *StdoutPipeline) Pipe(item *Item) {
 	fmt.Println(item.data)
 }
-
-type ConsoleJsonPipeline struct {
-}

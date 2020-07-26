@@ -54,13 +54,13 @@ func (r *DoubanRule) scrapeDetailPage(ctx *executor.Context) {
 		rank, _ := ctx.Get("Rank")
 		picLink := element.ChildAttr("#mainpic > a > img", "src")
 		year := element.ChildText("#content > h1 > span.year")
-		ctx.SaveResource(picLink, fmt.Sprintf("douban/%v.%v.%v", rank, year, title))
-		//ctx.Item(DoubanItem{
-		//	Title:   title.(string),
-		//	Year:    year,
-		//	PicLink: picLink,
-		//	Rank:    rank.(string),
-		//})
+		//ctx.SaveResource(picLink, fmt.Sprintf("douban/%v.%v.%v", rank, year, title))
+		ctx.Item(DoubanItem{
+			Title:   title.(string),
+			Year:    year,
+			PicLink: picLink,
+			Rank:    rank.(string),
+		})
 	})
 
 }

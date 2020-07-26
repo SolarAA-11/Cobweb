@@ -15,21 +15,21 @@ var (
 )
 
 type OnResponseCallback func(ctx *Context)
-type OnProcessErrorCallback func(cmd *Command, err error)
+type OnProcessErrorCallback func(cmd *Command, err ProcessError, entry *logrus.Entry)
 
 type BaseRule interface {
 	InitLinks() []string
 	InitScrape(ctx *Context)
 }
 
-// when command finishes download stage, it go into process stage,
+// when command finishes download stage, it goes into process stage,
 // processor invokes command.process in order to parse(scrape) structual data or next scrape link.
 // whenever some unexpected situation happened, command.process will panic
 // it mean error happened, i use defer and recover to grab this error and handle it
 // if you want to custom error handling, let struct while implement BaseRule implement ProcessErrorRule
 // otherwise task will use default handler.
 type ProcessErrorRule interface {
-	OnProcessError(ctx *Command, err error)
+	OnProcessError(cmd *Command, err ProcessError, entry *logrus.Entry)
 }
 
 type TimeoutRule interface {
@@ -302,22 +302,27 @@ func (t *Task) setOnProcessErrorCallback(rule interface{}) {
 	}
 }
 
-func defaultOnProcessErrorCallback(cmd *Command, err error) {
-	logEntry := logrus.WithFields(cmd.ctx.LogrusFields()).WithFields(logrus.Fields{
-		"Error": err,
+func defaultOnProcessErrorCallback(cmd *Command, err ProcessError, entry *logrus.Entry) {
+	entry.WithFields(cmd.ctx.LogrusFields()).WithFields(logrus.Fields{
+		"Error": err.Error(),
 		"Proxy": cmd.ctx.downloader.proxy(),
-	})
+	}).Debug("process error")
 	switch err {
-	case ERR_PROCESS_RETRY:
-		//logEntry.Error("command require retry.")
+	case PROCESS_ERR_ITEM_TYPE_INVALID:
+		entry.WithFields(cmd.ctx.LogrusFields()).Fatal("BAD USAGE PIPELINE ITEM TYPE INVALID")
+
+	case PROCESS_ERR_PARSE_DOC_FAILURE:
 		cmd.ctx.downloader.banned(cmd.ctx)
 		cmd.ctx.task.runningCMDBackToReady(cmd)
-	case ERR_PROCESS_PARSE_DOC_FAILURE:
-		//logEntry.Error("doc parse fail")
+
+	case PROCESS_ERR_NEED_RETRY:
 		cmd.ctx.downloader.banned(cmd.ctx)
 		cmd.ctx.task.runningCMDBackToReady(cmd)
-	default:
-		logEntry.Error("other failure")
+
+	case PROCESS_ERR_UNKNOWN:
 		cmd.ctx.task.failure(cmd)
+
+	default:
+		entry.WithFields(cmd.ctx.LogrusFields()).Fatal("BAD USAGE")
 	}
 }
