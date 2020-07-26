@@ -1,9 +1,10 @@
-package executor
+package cobweb
 
 import (
-	"github.com/sirupsen/logrus"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 type Executor struct {

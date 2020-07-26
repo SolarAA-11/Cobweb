@@ -1,15 +1,16 @@
-package executor
+package cobweb
 
 import (
 	"bytes"
-	"github.com/PuerkitoBio/goquery"
-	"github.com/sirupsen/logrus"
-	"github.com/valyala/fasthttp"
-	"golang.org/x/net/html"
 	"io/ioutil"
 	"os"
 	"path"
 	"reflect"
+
+	"github.com/PuerkitoBio/goquery"
+	"github.com/sirupsen/logrus"
+	"github.com/valyala/fasthttp"
+	"golang.org/x/net/html"
 )
 
 type H map[string]interface{}

@@ -8,6 +8,7 @@ require (
 	github.com/bitly/go-simplejson v0.5.0 // indirect
 	github.com/deckarep/golang-set v1.7.1
 	github.com/emirpasic/gods v1.12.0
+	github.com/go-sql-driver/mysql v1.5.0
 	github.com/gocolly/colly/v2 v2.1.0 // indirect
 	github.com/hu17889/go_spider v0.0.0-20150809033053-85ede20bf88b // indirect
 	github.com/jinzhu/gorm v1.9.15

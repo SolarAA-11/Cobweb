@@ -1,21 +1,57 @@
-package proxypool
+package cobweb
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/SolarDomo/Cobweb/internal/executor"
-	"github.com/SolarDomo/Cobweb/internal/proxypool/models"
-	"github.com/SolarDomo/Cobweb/internal/proxypool/storage"
+	"github.com/valyala/fasthttp/fasthttpproxy"
+
 	"github.com/robfig/cron/v3"
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
 )
 
+type AnonymityLevel int
+
+const (
+	Transparent AnonymityLevel = iota
+	Anonymous
+	Elite
+)
+
+// 代理结构体
+type Proxy struct {
+	ID int `gorm:"PRIMARY_KEY;AUTO_INCREMENT;"`
+
+	Host      string
+	Port      string
+	HTTPS     bool
+	Anonymity AnonymityLevel
+
+	Score int
+}
+
+func (this *Proxy) GetProxyURL() string {
+	schema := "http"
+	if this.HTTPS {
+		schema = "https"
+	}
+	return fmt.Sprintf("%s://%s:%s", schema, this.Host, this.Port)
+}
+
+func (this *Proxy) FastHTTPDialHTTPProxy() fasthttp.DialFunc {
+	return fasthttpproxy.FasthttpHTTPDialer(fmt.Sprintf("%s:%s", this.Host, this.Port))
+}
+
+func (this *Proxy) Equal(proxy *Proxy) bool {
+	return this.Host == proxy.Host && this.Port == proxy.Port
+}
+
 type ProxyPool struct {
-	e         *executor.Executor
+	e         *Executor
 	startOnce sync.Once
 
 	workCron *cron.Cron
@@ -32,7 +68,7 @@ type ProxyPool struct {
 }
 
 func NewProxyPool(
-	executor *executor.Executor,
+	executor *Executor,
 	proxyReqTimeout time.Duration,
 	checkRoutineMaxCount int,
 ) *ProxyPool {
@@ -86,7 +122,7 @@ func (p *ProxyPool) checkProxyPool() {
 
 	startTime := time.Now()
 
-	proxies, err := storage.Singleton().GetAllProxy()
+	proxies, err := Singleton().GetAllProxy()
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"Error": err,
@@ -130,7 +166,7 @@ func (p *ProxyPool) checkProxyPool() {
 }
 
 func (p *ProxyPool) checkProxy(
-	proxy *models.Proxy,
+	proxy *Proxy,
 	pActivatedCounter *int32,
 ) {
 	p.checkProxyWg.Add(1)
@@ -152,7 +188,7 @@ func (p *ProxyPool) checkProxy(
 			if originVal, ok := val["origin"]; ok {
 				origin, ok := originVal.(string)
 				if ok && origin == proxy.Host {
-					err := storage.Singleton().ActivateProxy(proxy)
+					err := Singleton().ActivateProxy(proxy)
 					if err != nil {
 						logrus.WithFields(logrus.Fields{
 							"Error": err,
@@ -177,7 +213,7 @@ func (p *ProxyPool) checkProxy(
 		"Error":    err,
 	}).Debug("DeActivate Proxy")
 
-	err = storage.Singleton().DeactivateProxy(proxy)
+	err = Singleton().DeactivateProxy(proxy)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"Error": err,

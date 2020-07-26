@@ -1,19 +1,18 @@
-package executor
+package cobweb
 
 import (
 	"errors"
-	"github.com/SolarDomo/Cobweb/internal/proxypool/models"
-	"github.com/SolarDomo/Cobweb/internal/proxypool/storage"
-	"github.com/SolarDomo/Cobweb/pkg/utils"
-	mapset "github.com/deckarep/golang-set"
-	"github.com/robfig/cron/v3"
-	"github.com/sirupsen/logrus"
-	"github.com/valyala/fasthttp"
 	"math"
 	"reflect"
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/SolarDomo/Cobweb/pkg/utils"
+	mapset "github.com/deckarep/golang-set"
+	"github.com/robfig/cron/v3"
+	"github.com/sirupsen/logrus"
+	"github.com/valyala/fasthttp"
 )
 
 type downloaderManager struct {
@@ -156,7 +155,7 @@ func (d *downloaderManager) replaceDownloaderNoLocker(oldD Downloader, reason st
 	}
 
 	d.downloaders = append(d.downloaders[:dIndex], d.downloaders[dIndex+1:]...)
-	err := storage.Singleton().DeactivateProxy(oldD.proxy())
+	err := Singleton().DeactivateProxy(oldD.proxy())
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"Error": err,
@@ -239,9 +238,9 @@ type proxyDownloaderFactory struct {
 }
 
 func (d *proxyDownloaderFactory) newDownloader(downloaders []Downloader, maxConcurrentReq int, k int) (Downloader, error) {
-	var proxy *models.Proxy = nil
+	var proxy *Proxy = nil
 	for {
-		tempProxy, err := storage.Singleton().GetRandTopKProxy(k)
+		tempProxy, err := Singleton().GetRandTopKProxy(k)
 		if err != nil {
 			return nil, err
 		}
@@ -276,7 +275,7 @@ func (n *noProxyDownloaderFactory) newDownloader(_ []Downloader, maxConcurrentRe
 
 type Downloader interface {
 	do(cmd *Command)
-	proxy() *models.Proxy
+	proxy() *Proxy
 	increaseErrCnt(maxErrCnt int) bool
 	resetErrCnt(maxErrCnt int) bool
 	tryAcquire(cmd *Command, interval time.Duration) error
@@ -290,7 +289,7 @@ type downloaderWrapper struct {
 }
 
 func newDownloaderWrapper(
-	proxy *models.Proxy,
+	proxy *Proxy,
 	maxConcurrentRequestCnt int,
 ) *downloaderWrapper {
 	d := &downloaderWrapper{newDownloader(proxy, maxConcurrentRequestCnt)}
@@ -304,7 +303,7 @@ func (d *downloaderWrapper) finalizer() {
 
 type downloader struct {
 	client                    *fasthttp.Client
-	proxyUsed                 *models.Proxy
+	proxyUsed                 *Proxy
 	errCntLocker              sync.Mutex
 	errCnt                    int
 	maxConcurrentReqSemaphore *utils.Semaphore
@@ -319,7 +318,7 @@ type downloader struct {
 }
 
 func newDownloader(
-	proxy *models.Proxy,
+	proxy *Proxy,
 	maxConcurrentRequestCnt int,
 ) *downloader {
 	var client *fasthttp.Client
@@ -368,7 +367,7 @@ func (d *downloader) do(cmd *Command) {
 	cmd.ctx.RespErr = d.client.DoTimeout(cmd.ctx.Request, cmd.ctx.Response, cmd.ctx.task.requestTimeout)
 }
 
-func (d *downloader) proxy() *models.Proxy {
+func (d *downloader) proxy() *Proxy {
 	return d.proxyUsed
 }
 

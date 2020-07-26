@@ -1,9 +1,10 @@
-package executor
+package cobweb
 
 import (
+	"runtime"
+
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
-	"runtime"
 )
 
 type Command struct {

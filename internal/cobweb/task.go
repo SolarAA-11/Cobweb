@@ -1,13 +1,14 @@
-package executor
+package cobweb
 
 import (
+	"reflect"
+	"sync"
+	"time"
+
 	"github.com/emirpasic/gods/sets"
 	"github.com/emirpasic/gods/sets/hashset"
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
-	"reflect"
-	"sync"
-	"time"
 )
 
 var (
@@ -120,6 +121,11 @@ func (t *Task) finish() {
 			panic("double close finished channel")
 		}
 	default:
+		// notify task's pipeline task finished, close pipeline.
+		for _, pipe := range t.pipes {
+			pipe.Close()
+		}
+
 		t.readyCMDSet.Clear()
 		t.runningCMDSet.Clear()
 		t.completedCMDSet.Clear()

@@ -1,9 +1,10 @@
-package executor
+package cobweb
 
 import (
-	"github.com/sirupsen/logrus"
 	"runtime"
 	"sync"
+
+	"github.com/sirupsen/logrus"
 )
 
 type processor struct {

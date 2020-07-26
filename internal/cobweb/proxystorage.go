@@ -1,17 +1,39 @@
-package storage
+package cobweb
 
 import (
 	"fmt"
-	"github.com/SolarDomo/Cobweb/internal/proxypool/models"
+	"math/rand"
+	"sync"
+
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mssql"
-	_ "github.com/jinzhu/gorm/dialects/mysql"
 	_ "github.com/jinzhu/gorm/dialects/postgres"
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
-	"math/rand"
-
 	"github.com/sirupsen/logrus"
 )
+
+type AbsProxyStorage interface {
+	GetProxy(proxy *Proxy) (*Proxy, error)
+	HasProxy(proxy *Proxy) (bool, error)
+	CreateProxy(proxy *Proxy) error
+	CreateProxyList([]*Proxy) int
+	ActivateProxy(proxy *Proxy) error
+	DeactivateProxy(proxy *Proxy) error
+	GetTopKProxyList(k int) ([]*Proxy, error)
+	GetRandTopKProxy(k int) (*Proxy, error)
+	GetAllProxy() ([]*Proxy, error)
+}
+
+var absStorageSingleton AbsProxyStorage
+var once sync.Once
+
+func Singleton() AbsProxyStorage {
+	once.Do(func() {
+		absStorageSingleton = newDBProxyStorage()
+	})
+	return absStorageSingleton
+}
 
 type dbProxyStorage struct {
 	dbConn *gorm.DB
@@ -29,8 +51,8 @@ func newDBProxyStorage() *dbProxyStorage {
 		return nil
 	}
 
-	if !dbConn.HasTable(&models.Proxy{}) {
-		err := dbConn.CreateTable(&models.Proxy{}).Error
+	if !dbConn.HasTable(&Proxy{}) {
+		err := dbConn.CreateTable(&Proxy{}).Error
 		if err != nil {
 			logrus.WithField("Error", err).Fatal("建立数据库表 Proxy 失败")
 		}
@@ -39,13 +61,13 @@ func newDBProxyStorage() *dbProxyStorage {
 	return &dbProxyStorage{dbConn: dbConn}
 }
 
-func (this *dbProxyStorage) GetProxy(proxy *models.Proxy) (*models.Proxy, error) {
+func (this *dbProxyStorage) GetProxy(proxy *Proxy) (*Proxy, error) {
 	if proxy == nil {
 		return nil, fmt.Errorf("Proxy is nil")
 	}
 
-	proxyInDB := &models.Proxy{}
-	err := this.dbConn.Model(proxy).Where(&models.Proxy{Host: proxy.Host, Port: proxy.Port}).Find(proxyInDB).Error
+	proxyInDB := &Proxy{}
+	err := this.dbConn.Model(proxy).Where(&Proxy{Host: proxy.Host, Port: proxy.Port}).Find(proxyInDB).Error
 	if err != nil {
 		return nil, err
 	}
@@ -53,13 +75,13 @@ func (this *dbProxyStorage) GetProxy(proxy *models.Proxy) (*models.Proxy, error)
 	return proxyInDB, nil
 }
 
-func (this *dbProxyStorage) HasProxy(proxy *models.Proxy) (bool, error) {
+func (this *dbProxyStorage) HasProxy(proxy *Proxy) (bool, error) {
 	if proxy == nil {
 		return false, fmt.Errorf("Proxy is nil")
 	}
 
 	proxyCount := 0
-	err := this.dbConn.Model(proxy).Where(&models.Proxy{Host: proxy.Host, Port: proxy.Port}).Count(&proxyCount).Error
+	err := this.dbConn.Model(proxy).Where(&Proxy{Host: proxy.Host, Port: proxy.Port}).Count(&proxyCount).Error
 	if err != nil {
 		return false, err
 	} else {
@@ -67,7 +89,7 @@ func (this *dbProxyStorage) HasProxy(proxy *models.Proxy) (bool, error) {
 	}
 }
 
-func (this *dbProxyStorage) CreateProxy(proxy *models.Proxy) error {
+func (this *dbProxyStorage) CreateProxy(proxy *Proxy) error {
 	if proxy == nil {
 		return fmt.Errorf("Proxy is nil")
 	}
@@ -83,7 +105,7 @@ func (this *dbProxyStorage) CreateProxy(proxy *models.Proxy) error {
 	return this.dbConn.Save(proxy).Error
 }
 
-func (this *dbProxyStorage) CreateProxyList(proxies []*models.Proxy) int {
+func (this *dbProxyStorage) CreateProxyList(proxies []*Proxy) int {
 	var createCount int = 0
 	for _, val := range proxies {
 		err := this.CreateProxy(val)
@@ -94,7 +116,7 @@ func (this *dbProxyStorage) CreateProxyList(proxies []*models.Proxy) int {
 	return createCount
 }
 
-func (this *dbProxyStorage) ActivateProxy(proxy *models.Proxy) error {
+func (this *dbProxyStorage) ActivateProxy(proxy *Proxy) error {
 	proxyInDB, err := this.GetProxy(proxy)
 	if err != nil {
 		return err
@@ -109,7 +131,7 @@ func (this *dbProxyStorage) ActivateProxy(proxy *models.Proxy) error {
 	return nil
 }
 
-func (this *dbProxyStorage) DeactivateProxy(proxy *models.Proxy) error {
+func (this *dbProxyStorage) DeactivateProxy(proxy *Proxy) error {
 	proxyInDB, err := this.GetProxy(proxy)
 	if err != nil {
 		return err
@@ -128,10 +150,10 @@ func (this *dbProxyStorage) DeactivateProxy(proxy *models.Proxy) error {
 	return nil
 }
 
-func (this *dbProxyStorage) GetTopKProxyList(k int) ([]*models.Proxy, error) {
-	proxyList := make([]*models.Proxy, 0)
+func (this *dbProxyStorage) GetTopKProxyList(k int) ([]*Proxy, error) {
+	proxyList := make([]*Proxy, 0)
 
-	err := this.dbConn.Model(&models.Proxy{}).Order("score desc").Limit(k).Find(&proxyList).Error
+	err := this.dbConn.Model(&Proxy{}).Order("score desc").Limit(k).Find(&proxyList).Error
 	if err != nil {
 		return nil, err
 	}
@@ -139,7 +161,7 @@ func (this *dbProxyStorage) GetTopKProxyList(k int) ([]*models.Proxy, error) {
 	return proxyList, nil
 }
 
-func (this *dbProxyStorage) GetRandTopKProxy(k int) (*models.Proxy, error) {
+func (this *dbProxyStorage) GetRandTopKProxy(k int) (*Proxy, error) {
 	proxyList, err := this.GetTopKProxyList(k)
 	if err != nil {
 		return nil, err
@@ -152,9 +174,9 @@ func (this *dbProxyStorage) GetRandTopKProxy(k int) (*models.Proxy, error) {
 	}
 }
 
-func (this *dbProxyStorage) GetAllProxy() ([]*models.Proxy, error) {
-	proxyList := make([]*models.Proxy, 0)
-	err := this.dbConn.Model(&models.Proxy{}).Find(&proxyList).Error
+func (this *dbProxyStorage) GetAllProxy() ([]*Proxy, error) {
+	proxyList := make([]*Proxy, 0)
+	err := this.dbConn.Model(&Proxy{}).Find(&proxyList).Error
 	if err != nil {
 		return nil, err
 	}

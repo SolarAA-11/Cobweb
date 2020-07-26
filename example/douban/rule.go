@@ -2,8 +2,9 @@ package douban
 
 import (
 	"fmt"
-	"github.com/SolarDomo/Cobweb/internal/executor"
 	"strings"
+
+	"github.com/SolarDomo/Cobweb/internal/cobweb"
 )
 
 /*
@@ -26,6 +27,13 @@ type DoubanItem struct {
 type DoubanRule struct {
 }
 
+func (r *DoubanRule) Pipelines() []cobweb.Pipeline {
+	return []cobweb.Pipeline{
+		&cobweb.JsonFilePipeline{},
+		&cobweb.StdoutPipeline{},
+	}
+}
+
 func (r *DoubanRule) InitLinks() []string {
 	links := make([]string, 0, 10)
 	for i := 0; i < 10; i++ {
@@ -34,13 +42,13 @@ func (r *DoubanRule) InitLinks() []string {
 	return links
 }
 
-func (r *DoubanRule) InitScrape(ctx *executor.Context) {
-	ctx.HTML("#content > div > div.article > ol > li", func(element *executor.HTMLElement) {
+func (r *DoubanRule) InitScrape(ctx *cobweb.Context) {
+	ctx.HTML("#content > div > div.article > ol > li", func(element *cobweb.HTMLElement) {
 		rank := element.ChildText("div.pic em")
 		title := element.ChildText("span.title")
 		detailLink := element.ChildAttr("div.pic a", "href")
 		if strings.TrimSpace(rank) != "65" {
-			ctx.Follow(detailLink, r.scrapeDetailPage, executor.H{
+			ctx.Follow(detailLink, r.scrapeDetailPage, cobweb.H{
 				"Rank":  rank,
 				"Title": title,
 			})
@@ -48,8 +56,8 @@ func (r *DoubanRule) InitScrape(ctx *executor.Context) {
 	})
 }
 
-func (r *DoubanRule) scrapeDetailPage(ctx *executor.Context) {
-	ctx.HTML("", func(element *executor.HTMLElement) {
+func (r *DoubanRule) scrapeDetailPage(ctx *cobweb.Context) {
+	ctx.HTML("", func(element *cobweb.HTMLElement) {
 		title, _ := ctx.Get("Title")
 		rank, _ := ctx.Get("Rank")
 		picLink := element.ChildAttr("#mainpic > a > img", "src")
@@ -62,5 +70,4 @@ func (r *DoubanRule) scrapeDetailPage(ctx *executor.Context) {
 			Rank:    rank.(string),
 		})
 	})
-
 }
