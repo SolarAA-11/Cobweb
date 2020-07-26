@@ -35,8 +35,8 @@ func NewDefaultExecutor() *Executor {
 	return NewExecutor(
 		&proxyDownloaderFactory{},
 		100,
-		5,
 		10,
+		15,
 		time.Second*3,
 	)
 }

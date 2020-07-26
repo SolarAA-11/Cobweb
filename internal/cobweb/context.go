@@ -267,7 +267,7 @@ func (e *HTMLElement) MayAttr(key string) string {
 	return attr
 }
 
-// return the content string of first child which satisfied selector.
+// return the content string of child which satisfied selector.
 // if no element found, method panic
 func (e *HTMLElement) ChildText(selector string) string {
 	childNode := e.dom.Find(selector)
@@ -276,7 +276,7 @@ func (e *HTMLElement) ChildText(selector string) string {
 			"Selector": selector,
 		})
 	}
-	return childNode.First().Text()
+	return childNode.Text()
 }
 
 // return the content string of first child which satisfied selector.

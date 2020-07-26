@@ -18,10 +18,11 @@ import (
 */
 
 type DoubanItem struct {
-	Title   string
-	Year    string
-	PicLink string
-	Rank    string
+	Title    string
+	Year     string
+	PicLink  string
+	Rank     string
+	Director string
 }
 
 type DoubanRule struct {
@@ -58,16 +59,21 @@ func (r *DoubanRule) InitScrape(ctx *cobweb.Context) {
 
 func (r *DoubanRule) scrapeDetailPage(ctx *cobweb.Context) {
 	ctx.HTML("", func(element *cobweb.HTMLElement) {
-		title, _ := ctx.Get("Title")
 		rank, _ := ctx.Get("Rank")
-		picLink := element.ChildAttr("#mainpic > a > img", "src")
+		title, _ := ctx.Get("Title")
 		year := element.ChildText("#content > h1 > span.year")
-		ctx.SaveResource(picLink, fmt.Sprintf("douban/%v.%v.%v.cover.jpg", rank, year, title))
-		ctx.Item(DoubanItem{
-			Title:   title.(string),
-			Year:    year,
-			PicLink: picLink,
-			Rank:    rank.(string),
+		picLink := element.ChildAttr("#mainpic > a > img", "src")
+
+		element.ForEach("div#info", func(element *cobweb.HTMLElement) {
+			director := element.ChildText("span > a[rel*=directedBy]")
+			ctx.SaveResource(picLink, fmt.Sprintf("douban/%v.%v.%v.cover.jpg", rank, year, title))
+			ctx.Item(DoubanItem{
+				Title:    title.(string),
+				Year:     year,
+				PicLink:  picLink,
+				Rank:     rank.(string),
+				Director: director,
+			})
 		})
 	})
 }

@@ -27,7 +27,7 @@ type Pipeline interface {
 type StdoutPipeline struct{}
 
 func (p *StdoutPipeline) Pipe(item *Item) {
-	j, err := json.Marshal(item.data)
+	j, err := json.MarshalIndent(item.data, "", "\t")
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"Data": item.data,
