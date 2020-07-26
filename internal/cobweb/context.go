@@ -135,6 +135,7 @@ func (c *Context) html(goquerySelector string, callback func(element *HTMLElemen
 		c.panicByDocParseError(logrus.Fields{
 			"GpqueryParseError": err,
 		})
+		return -1
 	}
 
 	nodeCount := doc.Find(goquerySelector).Each(func(index int, selection *goquery.Selection) {

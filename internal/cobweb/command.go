@@ -61,6 +61,15 @@ func (c *Command) Retry() {
 func (c *Command) process() {
 	defer c.processDeferFunc()
 	c.callback(c.ctx)
+
+	// pipe
+	items := c.ctx.task.extractItems()
+	pipes := c.ctx.task.pipelines()
+	for _, item := range items {
+		for _, pipe := range pipes {
+			pipe.Pipe(item)
+		}
+	}
 }
 
 // if process panics by cobweb inner method

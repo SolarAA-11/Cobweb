@@ -3,6 +3,7 @@ package cobweb
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path"
 	"sync"
@@ -26,7 +27,14 @@ type Pipeline interface {
 type StdoutPipeline struct{}
 
 func (p *StdoutPipeline) Pipe(item *Item) {
-	fmt.Println(item.data)
+	j, err := json.Marshal(item.data)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"Data": item.data,
+		}).Error("StdoutPipeline marshal item data to json failure.")
+		return
+	}
+	fmt.Println(string(j))
 }
 
 func (p *StdoutPipeline) Close() {
@@ -36,23 +44,44 @@ func (p *StdoutPipeline) Close() {
 const filePipelineDefaultFolderName = "filepipeline"
 
 type JsonFilePipeline struct {
-	locker sync.Mutex
-	items  []*Item
+	filepath string
+	locker   sync.Mutex
+	items    []*Item
+}
+
+func NewJFilePipeline(filepath ...string) *JsonFilePipeline {
+	switch len(filepath) {
+	case 0:
+		return &JsonFilePipeline{}
+	case 1:
+		return &JsonFilePipeline{filepath: filepath[0]}
+	default:
+		logrus.WithFields(logrus.Fields{
+			"FilePathArg": filepath,
+		}).Panic("argument filepath len large than 1")
+		return nil
+	}
 }
 
 func (p *JsonFilePipeline) Pipe(item *Item) {
-	p.locker.Lock()
-	defer p.locker.Unlock()
 	p.items = append(p.items, item)
 }
 
 func (p *JsonFilePipeline) Close() {
+	p.locker.Lock()
+	defer p.locker.Unlock()
 	if len(p.items) == 0 {
 		return
 	}
 
-	fileName := fmt.Sprintf("%v-%v.json", p.items[0].task.Name(), time.Now().Format("2006-01-02 15-04-05"))
-	filePath := path.Join("instance", "cobweb-pipe", "json-file-pipeline", fileName)
+	var filePath string
+	if p.filepath == "" {
+		fileName := fmt.Sprintf("%v-%v.json", p.items[0].task.Name(), time.Now().Format("2006-01-02 15-04-05"))
+		filePath = path.Join("instance", "cobweb-pipe", "json-file-pipeline", fileName)
+	} else {
+		filePath = path.Join("instance", p.filepath)
+	}
+
 	err := os.MkdirAll(path.Dir(filePath), os.ModeDir)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
@@ -63,23 +92,15 @@ func (p *JsonFilePipeline) Close() {
 		return
 	}
 
-	f, err := os.Create(filePath)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"Error":    err,
-			"FilePath": filePath,
-			"TaskName": p.items[0].task.Name(),
-		}).Error("JsonFilePipeline create file failure.")
-		return
-	}
-	defer f.Close()
-
-	dataArray := make([]map[string]string, len(p.items))
+	dataArray := make([]map[string]string, 0, len(p.items))
 	for _, item := range p.items {
+		if item.data == nil {
+			logrus.WithFields(logrus.Fields{}).Fatal("")
+		}
 		dataArray = append(dataArray, item.data)
 	}
 
-	jStr, err := json.Marshal(dataArray)
+	j, err := json.MarshalIndent(dataArray, "", "\t")
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"Error":    err,
@@ -89,7 +110,7 @@ func (p *JsonFilePipeline) Close() {
 		return
 	}
 
-	_, err = f.Write(jStr)
+	err = ioutil.WriteFile(filePath, j, os.ModePerm)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"Error":    err,

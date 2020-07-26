@@ -69,6 +69,7 @@ func newDownloaderManager(
 				"MaxConcurrentReq": maxConcurrentReq,
 				"ReqTimeInterval":  reqTimeInterval,
 			}).Panic("Downloader Factory failed to create new downloader.")
+			return nil
 		}
 		d.downloaders = append(d.downloaders, newDownloader)
 		logrus.WithFields(logrus.Fields{
@@ -169,6 +170,7 @@ func (d *downloaderManager) replaceDownloaderNoLocker(oldD Downloader, reason st
 			"OldProxy":     oldD.proxy(),
 			"FactoryError": err,
 		}).Panic("replace old downloader fail because factory can't create new old.")
+		return
 	}
 
 	d.downloaders = append(d.downloaders, newD)
@@ -176,7 +178,7 @@ func (d *downloaderManager) replaceDownloaderNoLocker(oldD Downloader, reason st
 		"OldProxy": oldD.proxy(),
 		"NewProxy": newD.proxy(),
 		"Reason":   reason,
-	}).Info("Replace old proxy.")
+	}).Debug("Replace old proxy.")
 }
 
 func (d *downloaderManager) replaceDownloader(oldD Downloader) {
@@ -189,22 +191,30 @@ func (d *downloaderManager) acquireDownloader(cmd *Command) Downloader {
 	d.downloadersLocker.Lock()
 	defer d.downloadersLocker.Unlock()
 
-	allBannedRefuse := true
+	var downloader Downloader = nil
+	var downloaderShouldBeReplaced Downloader = nil
+	bannedRefuseCnt := 0
 	for _, curDownloader := range d.downloaders {
 		err := curDownloader.tryAcquire(cmd, d.reqTimeInterval)
 		if err == nil {
-			return curDownloader
-		} else if err != ERR_BANNED_HOST {
-			allBannedRefuse = false
+			downloader = curDownloader
+			break
+		} else if err == ERR_BANNED_HOST {
+			bannedRefuseCnt++
+			if bannedRefuseCnt >= d.downloaderCnt/2 {
+				// if half of downloader array be banned from host
+				// we think just remove some one downloader and replace new downloader
+				// for make more command download request can be handled
+				downloaderShouldBeReplaced = curDownloader
+			}
 		}
 	}
 
-	if allBannedRefuse {
-		// all downloader refuse cmd because of banned host
-		d.replaceDownloaderNoLocker(d.downloaders[len(d.downloaders)-1], "Banned Too Many")
+	if downloaderShouldBeReplaced != nil {
+		d.replaceDownloaderNoLocker(downloaderShouldBeReplaced, "Banned Too Many")
 	}
 
-	return nil
+	return downloader
 }
 
 func (d *downloaderManager) Stop() {
@@ -338,7 +348,12 @@ func newDownloader(
 		clearCron:                 cron.New(),
 	}
 
-	d.clearCron.AddFunc("*/10 * * * *", d.clearUnusedHostInfo)
+	_, err := d.clearCron.AddFunc("*/10 * * * *", d.clearUnusedHostInfo)
+	if err != nil {
+		logrus.WithFields(logrus.Fields{
+			"Error": err,
+		}).Fatal("add cron function failure")
+	}
 	d.clearCron.Start()
 	return d
 }

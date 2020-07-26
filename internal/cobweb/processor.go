@@ -57,14 +57,6 @@ func (p *processor) processRoutine(id int) {
 				}
 			}()
 
-			// pipe
-			items := cmd.ctx.task.extractItems()
-			pipes := cmd.ctx.task.pipelines()
-			for _, item := range items {
-				for _, pipe := range pipes {
-					pipe.Pipe(item)
-				}
-			}
 		case <-p.stopCh:
 			loop = false
 		}
