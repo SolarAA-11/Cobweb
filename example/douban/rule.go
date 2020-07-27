@@ -18,22 +18,26 @@ import (
 */
 
 type DoubanItem struct {
-	Title    string
-	Year     string
-	PicLink  string
-	Rank     string
-	Director string
+	Title     string
+	Year      string
+	PicLink   string
+	Rank      string
+	Directors []string
+	Actors    []string
+	Kinds     []string
+	Runtime   string
+	IMDbLink  string
 }
 
 type DoubanRule struct {
 }
 
-func (r *DoubanRule) Pipelines() []cobweb.Pipeline {
-	return []cobweb.Pipeline{
-		cobweb.NewJFilePipeline("douban/info.json"),
-		&cobweb.StdoutPipeline{},
-	}
-}
+//func (r *DoubanRule) Pipelines() []cobweb.Pipeline {
+//	return []cobweb.Pipeline{
+//		cobweb.NewJFilePipeline("douban/info.json"),
+//		&cobweb.StdoutPipeline{},
+//	}
+//}
 
 func (r *DoubanRule) InitLinks() []string {
 	links := make([]string, 0, 10)
@@ -46,12 +50,10 @@ func (r *DoubanRule) InitLinks() []string {
 func (r *DoubanRule) InitScrape(ctx *cobweb.Context) {
 	ctx.HTML("#content > div > div.article > ol > li", func(element *cobweb.HTMLElement) {
 		rank := element.ChildText("div.pic em")
-		title := element.ChildText("span.title")
 		detailLink := element.ChildAttr("div.pic a", "href")
 		if strings.TrimSpace(rank) != "65" {
 			ctx.Follow(detailLink, r.scrapeDetailPage, cobweb.H{
-				"Rank":  rank,
-				"Title": title,
+				"Rank": rank,
 			})
 		}
 	})
@@ -60,20 +62,29 @@ func (r *DoubanRule) InitScrape(ctx *cobweb.Context) {
 func (r *DoubanRule) scrapeDetailPage(ctx *cobweb.Context) {
 	ctx.HTML("", func(element *cobweb.HTMLElement) {
 		rank, _ := ctx.Get("Rank")
-		title, _ := ctx.Get("Title")
+		title := element.ChildText("#content > h1 > span:nth-child(1)")
+		actors := element.ChildTexts("#info > span.actor > span.attrs > span")
+		kinds := element.ChildTexts("#info > span[property=v:genre]")
+		runtime := element.ChildText("#info > span[property=v:runtime]")
+		imdbLink := element.ChildAttr("#info > a", "href")
 		year := element.ChildText("#content > h1 > span.year")
 		picLink := element.ChildAttr("#mainpic > a > img", "src")
 
 		element.ForEach("div#info", func(element *cobweb.HTMLElement) {
-			director := element.ChildText("span > a[rel*=directedBy]")
-			ctx.SaveResource(picLink, fmt.Sprintf("douban/%v.%v.%v.cover.jpg", rank, year, title))
+			directors := element.ChildTexts("span > a[rel*=directedBy]")
+
 			ctx.Item(DoubanItem{
-				Title:    title.(string),
-				Year:     year,
-				PicLink:  picLink,
-				Rank:     rank.(string),
-				Director: director,
+				Title:     title,
+				Year:      year,
+				PicLink:   picLink,
+				Rank:      rank.(string),
+				Directors: directors,
+				Actors:    actors,
+				Kinds:     kinds,
+				Runtime:   runtime,
+				IMDbLink:  imdbLink,
 			})
+			ctx.SaveResource(picLink, fmt.Sprintf("douban/%v.%v.%v.cover.jpg", rank, year, title))
 		})
 	})
 }

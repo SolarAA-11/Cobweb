@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/sirupsen/logrus"
+
 	"github.com/SolarDomo/Cobweb/example/douban"
 	"github.com/SolarDomo/Cobweb/internal/cobweb"
 )
 
 func main() {
-	//logrus.SetLevel(logrus.DebugLevel)
+	logrus.SetLevel(logrus.DebugLevel)
 	startTime := time.Now()
 	e := cobweb.NewDefaultExecutor()
 	t := e.AcceptRule(&douban.DoubanRule{})

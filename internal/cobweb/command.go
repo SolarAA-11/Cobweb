@@ -62,8 +62,8 @@ func (c *Command) process() {
 	defer c.processDeferFunc()
 	c.callback(c.ctx)
 
-	// pipe
-	items := c.ctx.task.extractItems()
+	// pipe ItemInfos to pipelines in order to handling item.
+	items := c.ctx.task.extractItemInfos()
 	pipes := c.ctx.task.pipelines()
 	for _, item := range items {
 		for _, pipe := range pipes {

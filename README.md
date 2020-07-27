@@ -6,12 +6,17 @@ Distributed and equiped with proxypool spider system.
 
 - [ ] cobweb.Task 和 cobweb.Command 的信息追踪和获取
 - [ ] Pipeline Item 的形式如何确定
-    - 当前 Item 的类型为 `map[string]string`, 但这不能普遍适用. 如果某个 Field 需要使用字符串数组或者嵌套结构体就无法满足要求
+    - 当前 Item.data 的类型为 `map[string]string`, 但这不能普遍适用. 如果某个 Field 需要使用字符串数组或者嵌套结构体就无法满足要求
+    - ***决定*** 使用类型 `interface{}`, 表示 `Item.data`
+    - 方法 `Context.Item(data interface)` 的参数 data, 为用户定义的 Item 类型, 其必须为 Struct 或者 Pointer of struct, 并且其中开头大写的 Field 字段必须为 string, []string 或者同样满足此条件的 Struct 或者 Pointer of struct.
 - [ ] cobweb 的用例
     - [ ] douban top 250
         - 抓取信息有: 标题, 年份, 封面连接(并将封面保存), 导演, 编剧, 主演, 类型, 制片国家或地区, 语言, 片长, IMDb链接
     - [ ] 再加上两个用例
 - [ ] 编写 ProxyPool 免费代理网站数据抓取规则
+    - [ ] 66ip 代理
+    - [ ] FreeProxyList
+    - [ ] 
 
 
 

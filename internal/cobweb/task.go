@@ -1,6 +1,7 @@
 package cobweb
 
 import (
+	"errors"
 	"reflect"
 	"sync"
 	"time"
@@ -63,8 +64,12 @@ type Task struct {
 	fChanOnce sync.Once
 	fChan     chan struct{}
 
-	itemsLocker sync.Mutex
-	items       sets.Set
+	itemInfosLocker sync.Mutex
+	itemInfos       []*ItemInfo
+
+	// itemTypesRegister saves checked item type
+	// valid and invalid item type
+	itemTypesRegister sync.Map
 
 	pipes []Pipeline
 
@@ -79,7 +84,6 @@ func newTask(rule BaseRule, name ...string) *Task {
 		runningCMDSet:   hashset.New(),
 		completedCMDSet: hashset.New(),
 		failureCMDSet:   hashset.New(),
-		items:           hashset.New(),
 	}
 
 	// set other option
@@ -134,27 +138,43 @@ func (t *Task) finish() {
 	}
 }
 
-func (t *Task) addItem(item *Item) {
-	t.itemsLocker.Lock()
-	defer t.itemsLocker.Unlock()
-	t.items.Add(item)
+// check itemType by previous checked item
+func (t *Task) itemTypeCheckByPrev(itemType reflect.Type) (bool, error) {
+	valid, ok := t.itemTypesRegister.Load(itemType)
+	if !ok {
+		return false, errors.New("not exists")
+	} else {
+		return valid.(bool), nil
+	}
 }
 
-func (t *Task) extractItems() []*Item {
-	t.itemsLocker.Lock()
+// register valid item type
+func (t *Task) itemValidTypeRegister(itemType reflect.Type) {
+	t.itemTypesRegister.Store(itemType, true)
+}
+
+// register invalid item type
+func (t *Task) itemInvalidTypeRegister(itemType reflect.Type) {
+	t.itemTypesRegister.Store(itemType, false)
+}
+
+// add new ItemInfo to Task obj
+func (t *Task) addItemInfo(info *ItemInfo) {
+	t.itemInfosLocker.Lock()
+	defer t.itemInfosLocker.Unlock()
+	t.itemInfos = append(t.itemInfos, info)
+}
+
+// extract ItemInfos in Task obj now.
+func (t *Task) extractItemInfos() []*ItemInfo {
+	t.itemInfosLocker.Lock()
 	defer func() {
-		t.items.Clear()
-		t.itemsLocker.Unlock()
+		t.itemInfos = t.itemInfos[0:0]
+		t.itemInfosLocker.Unlock()
 	}()
-	items := make([]*Item, 0, t.items.Size())
-	itemVals := t.items.Values()
-	for _, val := range itemVals {
-		item, ok := val.(*Item)
-		if ok {
-			items = append(items, item)
-		}
-	}
-	return items
+	extractedInfos := make([]*ItemInfo, len(t.itemInfos))
+	copy(extractedInfos, t.itemInfos)
+	return extractedInfos
 }
 
 func (t *Task) pipelines() []Pipeline {

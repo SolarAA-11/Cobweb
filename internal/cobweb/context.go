@@ -81,40 +81,78 @@ func (c *Context) Retry() {
 	c.panicByNeedRetry(logrus.Fields{})
 }
 
-// send item to pipeline
-// argument item must be struct or pointer of struct
-// it not method panic
+// send item to be handled by pipelines
+// invalid item type will trigger process error panic
 func (c *Context) Item(item interface{}) {
-	// check item type
-	// struct or pointer of struct
-	itemVal := reflect.ValueOf(item)
-	if itemVal.Kind() == reflect.Struct || (itemVal.Kind() == reflect.Ptr && itemVal.Elem().Kind() == reflect.Struct) {
-		// iterate item's field
-		// only Capital name fields added to pipeline item
-		if itemVal.Kind() == reflect.Ptr {
-			itemVal = itemVal.Elem()
+	// check item type valid
+	// process error item type invalid error panic if invalid
+	itemType := reflect.TypeOf(item)
+	valid, err := c.task.itemTypeCheckByPrev(itemType)
+	if err != nil {
+		valid = c.checkItemTypeValid(itemType)
+		if valid {
+			c.task.itemValidTypeRegister(itemType)
+		} else {
+			c.task.itemInvalidTypeRegister(itemType)
 		}
-		pipeItem := &Item{
-			task: c.task,
-			data: make(map[string]string),
-		}
+	}
 
-		itemType := itemVal.Type()
-		itemFieldCnt := itemType.NumField()
-		for i := 0; i < itemFieldCnt; i++ {
-			fieldType := itemType.Field(i)
-			if fieldType.Type.Kind() == reflect.String && fieldType.Name[0] >= 'A' && fieldType.Name[0] <= 'Z' {
-				fieldVal := itemVal.Field(i)
-				pipeItem.data[fieldType.Name] = fieldVal.String()
-			}
-		}
-
-		c.task.addItem(pipeItem)
-	} else {
+	if !valid {
 		c.panicByPipeItemTypeInvalid(logrus.Fields{
 			"Item": item,
 		})
 	}
+
+	// create itemInfo and add to task
+	itemInfo := &ItemInfo{
+		task: c.task,
+		item: item,
+	}
+	c.task.addItemInfo(itemInfo)
+}
+
+// check whether item's type is valid. Type is valid only if
+// 1. item's Type is Struct or Pointer of Struct.
+// 2. Struct's Open Field' Type is string or []string.
+// 3. if Struct's Open Field's Type is not string or []string but Struct or Pointer of Struct, check it recursively
+//
+// if item's Type is valid return true, otherwise returning false
+func (c *Context) checkItemTypeValid(itemType reflect.Type) bool {
+	if itemType.Kind() == reflect.Ptr {
+		itemType = itemType.Elem()
+	}
+
+	if itemType.Kind() != reflect.Struct {
+		return false
+	}
+
+	itemFieldCnt := itemType.NumField()
+	for i := 0; i < itemFieldCnt; i++ {
+		field := itemType.Field(i)
+		if field.Name[0] >= 'A' && field.Name[0] <= 'Z' {
+			switch field.Type.Kind() {
+			case reflect.Ptr:
+				if !c.checkItemTypeValid(field.Type) {
+					return false
+				}
+			case reflect.Struct:
+				if !c.checkItemTypeValid(field.Type) {
+					return false
+				}
+			case reflect.String:
+				continue
+			case reflect.Slice:
+				if field.Type.Elem().Kind() == reflect.String {
+					continue
+				} else {
+					return false
+				}
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (c *Context) Doc() (*goquery.Document, error) {
@@ -169,6 +207,15 @@ func (c *Context) panicByDocParseError(logFields logrus.Fields) {
 
 func (c *Context) panicByPipeItemTypeInvalid(logFields logrus.Fields) {
 	panic(newProcessPanicInfo(logrus.WithFields(logFields), PROCESS_ERR_ITEM_TYPE_INVALID))
+}
+
+func (c *Context) saveResponseBodyForDebug() {
+	if len(c.Response.Body()) == 0 {
+		// todo
+
+	}
+
+	//fileName := fmt.Sprintf("debug-respBodySaved-%v-")
 }
 
 func (c *Context) SaveResource(link, fileName string) {

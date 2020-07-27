@@ -12,25 +12,25 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type Item struct {
+type ItemInfo struct {
 	task *Task
-	data map[string]string
+	item interface{}
 }
 
 // Pipeline send structual data into certain output device
 // for example, stdout, mysql, sqlite, redis
 type Pipeline interface {
-	Pipe(item *Item)
+	Pipe(info *ItemInfo)
 	Close()
 }
 
 type StdoutPipeline struct{}
 
-func (p *StdoutPipeline) Pipe(item *Item) {
-	j, err := json.MarshalIndent(item.data, "", "\t")
+func (p *StdoutPipeline) Pipe(info *ItemInfo) {
+	j, err := json.MarshalIndent(info.item, "", "\t")
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
-			"Data": item.data,
+			"Item": info.item,
 		}).Error("StdoutPipeline marshal item data to json failure.")
 		return
 	}
@@ -44,9 +44,9 @@ func (p *StdoutPipeline) Close() {
 const filePipelineDefaultFolderName = "filepipeline"
 
 type JsonFilePipeline struct {
-	filepath string
-	locker   sync.Mutex
-	items    []*Item
+	filepath  string
+	locker    sync.Mutex
+	itemInfos []*ItemInfo
 }
 
 func NewJFilePipeline(filepath ...string) *JsonFilePipeline {
@@ -63,20 +63,22 @@ func NewJFilePipeline(filepath ...string) *JsonFilePipeline {
 	}
 }
 
-func (p *JsonFilePipeline) Pipe(item *Item) {
-	p.items = append(p.items, item)
+func (p *JsonFilePipeline) Pipe(info *ItemInfo) {
+	p.locker.Lock()
+	defer p.locker.Unlock()
+	p.itemInfos = append(p.itemInfos, info)
 }
 
 func (p *JsonFilePipeline) Close() {
 	p.locker.Lock()
 	defer p.locker.Unlock()
-	if len(p.items) == 0 {
+	if len(p.itemInfos) == 0 {
 		return
 	}
 
 	var filePath string
 	if p.filepath == "" {
-		fileName := fmt.Sprintf("%v-%v.json", p.items[0].task.Name(), time.Now().Format("2006-01-02 15-04-05"))
+		fileName := fmt.Sprintf("%v-%v.json", p.itemInfos[0].task.Name(), time.Now().Format("2006-01-02 15-04-05"))
 		filePath = path.Join("instance", "cobweb-pipe", "json-file-pipeline", fileName)
 	} else {
 		filePath = path.Join("instance", p.filepath)
@@ -87,17 +89,17 @@ func (p *JsonFilePipeline) Close() {
 		logrus.WithFields(logrus.Fields{
 			"Error":    err,
 			"FilePath": filePath,
-			"TaskName": p.items[0].task.Name(),
+			"TaskName": p.itemInfos[0].task.Name(),
 		}).Error("JsonFilePipeline create directory failure.")
 		return
 	}
 
-	dataArray := make([]map[string]string, 0, len(p.items))
-	for _, item := range p.items {
-		if item.data == nil {
+	dataArray := make([]interface{}, 0, len(p.itemInfos))
+	for _, info := range p.itemInfos {
+		if info.item == nil {
 			logrus.WithFields(logrus.Fields{}).Fatal("")
 		}
-		dataArray = append(dataArray, item.data)
+		dataArray = append(dataArray, info.item)
 	}
 
 	j, err := json.MarshalIndent(dataArray, "", "\t")
@@ -105,7 +107,7 @@ func (p *JsonFilePipeline) Close() {
 		logrus.WithFields(logrus.Fields{
 			"Error":    err,
 			"FilePath": filePath,
-			"TaskName": p.items[0].task.Name(),
+			"TaskName": p.itemInfos[0].task.Name(),
 		}).Error("Json marshal item data array failure.")
 		return
 	}
@@ -115,13 +117,13 @@ func (p *JsonFilePipeline) Close() {
 		logrus.WithFields(logrus.Fields{
 			"Error":    err,
 			"FilePath": filePath,
-			"TaskName": p.items[0].task.Name(),
+			"TaskName": p.itemInfos[0].task.Name(),
 		}).Error("Write json represent to file failure.")
 		return
 	}
 
 	logrus.WithFields(logrus.Fields{
 		"FilePath": filePath,
-		"TaskName": p.items[0].task.Name(),
+		"TaskName": p.itemInfos[0].task.Name(),
 	}).Info("JsonFilePipeline write finish.")
 }
