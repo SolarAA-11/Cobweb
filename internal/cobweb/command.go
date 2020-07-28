@@ -1,108 +1,272 @@
 package cobweb
 
 import (
+	"encoding/json"
 	"runtime"
+	"time"
 
+	"github.com/rs/xid"
 	"github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
 )
 
-type Command struct {
-	ctx      *Context
-	callback OnResponseCallback
+type ParseErrorKind int
+
+const (
+	UnknownParseError ParseErrorKind = iota
+	ParseHTMLError
+	HTMLNodeNotFoundError
+)
+
+type ParseErrorInfo struct {
+	Ctx        *Context
+	ErrKind    ParseErrorKind
+	PanicValue interface{}
 }
 
-func newCommandByURI(uri *fasthttp.URI, callback OnResponseCallback, t *Task, contextInfo ...H) *Command {
+func (i *ParseErrorInfo) jsonRep() []byte {
+	d := i.Ctx.logrusFields()
+	d["PanicValue"] = i.PanicValue
+	d["ParseErrorKind"] = i.ErrKind
+	j, err := json.MarshalIndent(d, "", "\t")
+	if err != nil {
+		// todo
+	}
+	return j
+}
 
+type PipeErrorKind int
+
+const (
+	UnknownPipeError PipeErrorKind = iota
+)
+
+type PipeErrorInfo struct {
+	Ctx       *Context
+	ErrKind   PipeErrorKind
+	PanicInfo interface{}
+}
+
+type commandBuilder struct {
+	task *Task
+
+	// for build request
+	link      string
+	userAgent string
+	cookies   map[string]string
+
+	parseCallback   OnParseCallback
+	downloadTimeout time.Duration
+
+	// for context data
+	contextData H
+}
+
+func newCommandBuilder(task *Task) *commandBuilder {
+	return &commandBuilder{
+		task:            task,
+		userAgent:       "cobweb",
+		downloadTimeout: DefaultDownloadTimeout,
+		cookies:         make(map[string]string),
+		contextData:     make(H),
+	}
+}
+
+func (b *commandBuilder) Link(link string) *commandBuilder {
+	b.link = link
+	return b
+}
+
+func (b *commandBuilder) UserAgent(agent string) *commandBuilder {
+	b.userAgent = agent
+	return b
+}
+
+func (b *commandBuilder) Cookie(key, val string) *commandBuilder {
+	b.cookies[key] = val
+	return b
+}
+
+func (b *commandBuilder) Callback(callback OnParseCallback) *commandBuilder {
+	b.parseCallback = callback
+	return b
+}
+
+func (b *commandBuilder) DownloadTimeout(timeout time.Duration) *commandBuilder {
+	b.downloadTimeout = timeout
+	return b
+}
+
+func (b *commandBuilder) ContextData(data H) *commandBuilder {
+	for key, val := range data {
+		b.contextData[key] = val
+	}
+	return b
+}
+
+func (b *commandBuilder) build() *command {
+	cmd := &command{
+		id:              xid.New(),
+		task:            b.task,
+		onParseCallback: b.parseCallback,
+		downloadTimeout: b.downloadTimeout,
+		contextData:     b.contextData.clone(),
+	}
+
+	// build request
 	req := fasthttp.AcquireRequest()
-	req.SetRequestURI(uri.String())
-	resp := fasthttp.AcquireResponse()
-	ctx := &Context{
-		task:     t,
-		Request:  req,
-		Response: resp,
-		RespErr:  nil,
+	req.SetRequestURI(b.link)
+	req.Header.SetUserAgent(b.userAgent)
+	for k, v := range b.cookies {
+		req.Header.SetCookie(k, v)
 	}
-	switch len(contextInfo) {
-	case 0:
-		ctx.keys = make(H)
-	case 1:
-		ctx.keys = contextInfo[0].clone()
-	default:
-		panic("contextInfo large than 1")
-	}
+	cmd.downloadRequest = req
 
-	cmd := &Command{ctx: ctx, callback: callback}
-	runtime.SetFinalizer(cmd, (*Command).releaseResource)
+	// response
+	resp := fasthttp.AcquireResponse()
+	cmd.downloadResponse = resp
+
+	// SetFinalizer to release request and response
+	runtime.SetFinalizer(cmd, (*command).finalizer)
+
 	return cmd
 }
 
-func newCommandByURIString(uri string, callback OnResponseCallback, t *Task, contextInfo ...H) *Command {
-	u := fasthttp.AcquireURI()
-	defer fasthttp.ReleaseURI(u)
+type command struct {
+	id xid.ID
 
-	err := u.Parse(nil, []byte(uri))
-	if err != nil {
-		return nil
+	task            *Task
+	onParseCallback OnParseCallback
+
+	downloaderUsed *downloader
+
+	downloadRequest  *fasthttp.Request
+	downloadResponse *fasthttp.Response
+	downloadError    error
+	downloadTimeout  time.Duration
+
+	// context extra info data
+	contextData H
+
+	//
+	needRetry bool
+}
+
+func (c *command) finalizer() {
+	fasthttp.ReleaseRequest(c.downloadRequest)
+	fasthttp.ReleaseResponse(c.downloadResponse)
+}
+
+func (c *command) logrusFields() logrus.Fields {
+	return logrus.Fields{
+		"CommandID":   c.id,
+		"Request":     c.downloadRequest.String(),
+		"RespBodyLen": len(c.downloadResponse.Body()),
+		"StatusCode":  c.downloadResponse.StatusCode(),
+		"DownloadErr": c.downloadError,
+		"Task":        c.task.logrusFields(),
 	}
-	return newCommandByURI(u, callback, t, contextInfo...)
 }
 
-func (c *Command) releaseResource() {
-	fasthttp.ReleaseRequest(c.ctx.Request)
-	fasthttp.ReleaseResponse(c.ctx.Response)
+func (c *command) retry() {
+	c.needRetry = true
 }
 
-func (c *Command) Retry() {
-	c.ctx.Retry()
+func (c *command) request() *fasthttp.Request {
+	return c.downloadRequest
 }
 
-// after fini
-func (c *Command) process() {
-	defer c.processDeferFunc()
-	c.callback(c.ctx)
-
-	// pipe ItemInfos to pipelines in order to handling item.
-	items := c.ctx.task.extractItemInfos()
-	pipes := c.ctx.task.pipelines()
-	for _, item := range items {
-		for _, pipe := range pipes {
-			pipe.Pipe(item)
-		}
-	}
+func (c *command) beBanned() {
+	c.downloaderUsed.beBaned(c)
 }
 
-// if process panics by cobweb inner method
-// recover will return processPanicInfo's pointer
-type processPanicInfo struct {
-	// logrusInfo save some information about panic situation
-	// like, CSS selector string for ERR_PARSE_DOC_FAILURE
-	// and Context Info
-	logrusInfo *logrus.Entry
-	pErr       ProcessError
+func (c *command) response() *fasthttp.Response {
+	return c.downloadResponse
 }
 
-func newProcessPanicInfo(logrusInfo *logrus.Entry, err ProcessError) *processPanicInfo {
-	pInfo := &processPanicInfo{
-		logrusInfo: logrusInfo,
-		pErr:       err,
-	}
-	return pInfo
+func (c *command) timeout() time.Duration {
+	return c.downloadTimeout
 }
 
-func (c *Command) processDeferFunc() {
+func (c *command) downloadFinished(downloadError error) bool {
+	c.task.onDownloadFinishCallback(c.createContext())
+	c.downloadError = downloadError
+	return c.downloadError == nil
+	//return c.downloadError == nil && c.downloadResponse.StatusCode() == 200
+}
+
+// use coreCommand to handle context, parse required resource to generate new command and itemInfo
+// new command and itemInfo are saved in context, task will record these information
+func (c *command) parse() ([]*command, []*itemInfo) {
+	defer c.parseDeferFunc()
+
+	ctx := c.createContext()
+	c.onParseCallback(ctx)
+
+	itemInfos := ctx.itemInfos()
+	cmds := ctx.commands()
+
+	// task record these information
+	c.task.recordNewCommands(cmds)
+	c.task.recordNewItemInfos(itemInfos)
+
+	// if function run here it's obvious that the command is completed
+	c.task.recordCompletedCommand(c)
+
+	return cmds, itemInfos
+}
+
+func (c *command) parseDeferFunc() {
 	panicVal := recover()
-	if panicVal != nil {
-		// process panics!
-		switch panicVal.(type) {
-		case *processPanicInfo:
-			pInfo, _ := panicVal.(*processPanicInfo)
-			c.ctx.task.onProcessError(c, pInfo.pErr, pInfo.logrusInfo)
-		default:
-			c.ctx.task.onProcessError(c, PROCESS_ERR_UNKNOWN, logrus.WithField("OriginalError", panicVal))
-		}
-	} else {
-		// process finished
-		c.ctx.task.complete(c)
+	if panicVal == nil {
+		// parse method return normal
+		return
 	}
+
+	// parse method panics
+	switch panicVal.(type) {
+	case *ParseErrorInfo:
+		c.task.onParseErrorCallback(panicVal.(*ParseErrorInfo))
+
+	default:
+		// panic by unexpected situation
+		c.task.onParseErrorCallback(&ParseErrorInfo{
+			Ctx:        c.createContext(),
+			ErrKind:    UnknownParseError,
+			PanicValue: panicVal,
+		})
+	}
+}
+
+func (c *command) pipe(info *itemInfo) {
+	pipelines := c.task.pipelines()
+	for _, pipeline := range pipelines {
+		pipeline.Pipe(info)
+	}
+	c.task.recordCompletedItemInfo(info)
+}
+
+func (c *command) pipeDeferFunc() {
+	panicVal := recover()
+	if panicVal == nil {
+		return
+	}
+
+	// pipe method panic
+	switch panicVal.(type) {
+	case *PipeErrorInfo:
+		c.task.onPipeErrorCallback(panicVal.(*PipeErrorInfo))
+	default:
+		// panic by unexpected situation
+		c.task.onPipeErrorCallback(&PipeErrorInfo{
+			Ctx:       c.createContext(),
+			ErrKind:   UnknownPipeError,
+			PanicInfo: panicVal,
+		})
+	}
+}
+
+// create new context with command=
+func (c *command) createContext() *Context {
+	return newContext(c)
 }

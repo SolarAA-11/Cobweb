@@ -32,12 +32,11 @@ type DoubanItem struct {
 type DoubanRule struct {
 }
 
-//func (r *DoubanRule) Pipelines() []cobweb.Pipeline {
-//	return []cobweb.Pipeline{
-//		cobweb.NewJFilePipeline("douban/info.json"),
-//		&cobweb.StdoutPipeline{},
-//	}
-//}
+func (r *DoubanRule) Pipelines() []cobweb.Pipeline {
+	return []cobweb.Pipeline{
+		&cobweb.JsonFilePipeline{},
+	}
+}
 
 func (r *DoubanRule) InitLinks() []string {
 	links := make([]string, 0, 10)
@@ -47,7 +46,7 @@ func (r *DoubanRule) InitLinks() []string {
 	return links
 }
 
-func (r *DoubanRule) InitScrape(ctx *cobweb.Context) {
+func (r *DoubanRule) InitParse(ctx *cobweb.Context) {
 	ctx.HTML("#content > div > div.article > ol > li", func(element *cobweb.HTMLElement) {
 		rank := element.ChildText("div.pic em")
 		detailLink := element.ChildAttr("div.pic a", "href")
@@ -63,16 +62,15 @@ func (r *DoubanRule) scrapeDetailPage(ctx *cobweb.Context) {
 	ctx.HTML("", func(element *cobweb.HTMLElement) {
 		rank, _ := ctx.Get("Rank")
 		title := element.ChildText("#content > h1 > span:nth-child(1)")
-		actors := element.ChildTexts("#info > span.actor > span.attrs > span")
-		kinds := element.ChildTexts("#info > span[property=v:genre]")
-		runtime := element.ChildText("#info > span[property=v:runtime]")
-		imdbLink := element.ChildAttr("#info > a", "href")
-		year := element.ChildText("#content > h1 > span.year")
+		actors := element.MayChildrenTexts("#info > span.actor > span.attrs a")
+		kinds := element.MayChildrenTexts("#info > span[property*=genre]")
+		runtime := element.MayChildText("#info > span[property*=runtime]")
+		imdbLink := element.MayChildAttr("#info > a", "href")
+		year := element.MayChildText("#content > h1 > span.year")
 		picLink := element.ChildAttr("#mainpic > a > img", "src")
 
 		element.ForEach("div#info", func(element *cobweb.HTMLElement) {
-			directors := element.ChildTexts("span > a[rel*=directedBy]")
-
+			directors := element.ChildrenTexts("span > a[rel*=directedBy]")
 			ctx.Item(DoubanItem{
 				Title:     title,
 				Year:      year,
@@ -84,7 +82,7 @@ func (r *DoubanRule) scrapeDetailPage(ctx *cobweb.Context) {
 				Runtime:   runtime,
 				IMDbLink:  imdbLink,
 			})
-			ctx.SaveResource(picLink, fmt.Sprintf("douban/%v.%v.%v.cover.jpg", rank, year, title))
+			ctx.SaveResource(picLink, fmt.Sprintf("%v.%v.%v.cover.jpg", rank, year, title))
 		})
 	})
 }

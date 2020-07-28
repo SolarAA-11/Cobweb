@@ -23,12 +23,13 @@ type AbsProxyStorage interface {
 	GetTopKProxyList(k int) ([]*Proxy, error)
 	GetRandTopKProxy(k int) (*Proxy, error)
 	GetAllProxy() ([]*Proxy, error)
+	GetRandProxyWithRefuseList([]*Proxy) (*Proxy, error)
 }
 
 var absStorageSingleton AbsProxyStorage
 var once sync.Once
 
-func Singleton() AbsProxyStorage {
+func ProxyStorageSingleton() AbsProxyStorage {
 	once.Do(func() {
 		absStorageSingleton = newDBProxyStorage()
 	})
@@ -181,4 +182,20 @@ func (this *dbProxyStorage) GetAllProxy() ([]*Proxy, error) {
 		return nil, err
 	}
 	return proxyList, nil
+}
+
+func (this *dbProxyStorage) GetRandProxyWithRefuseList(refuseList []*Proxy) (*Proxy, error) {
+	conn := this.dbConn.Model(&Proxy{})
+	if len(refuseList) != 0 {
+		hostList := make([]string, 0, len(refuseList))
+		for _, proxy := range refuseList {
+			hostList = append(hostList, proxy.Host)
+		}
+		conn = conn.Not("host", hostList)
+	}
+
+	proxyList := make([]*Proxy, 0)
+	err := conn.Order("score desc").Limit(10).Find(&proxyList).Error
+	randIndex := rand.Intn(len(proxyList))
+	return proxyList[randIndex], err
 }

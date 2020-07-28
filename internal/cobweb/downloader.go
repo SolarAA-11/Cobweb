@@ -2,459 +2,427 @@ package cobweb
 
 import (
 	"errors"
-	"math"
-	"reflect"
 	"runtime"
 	"sync"
 	"time"
 
-	"github.com/SolarDomo/Cobweb/pkg/utils"
-	mapset "github.com/deckarep/golang-set"
 	"github.com/robfig/cron/v3"
-	"github.com/sirupsen/logrus"
+
+	"github.com/SolarDomo/Cobweb/pkg/utils"
+
+	mapset "github.com/deckarep/golang-set"
+
 	"github.com/valyala/fasthttp"
+
+	"github.com/sirupsen/logrus"
 )
 
+//
 type downloaderManager struct {
-	dFactory downloaderFactory
+	dFactory                  downloaderFactory
+	downloaderConcurrentLimit int
+	downloaderReqHostInterval time.Duration
+	downloaderErrCntLimit     int
+	downloaderListLocker      sync.RWMutex
+	downloaderList            []*downloader
 
-	downloaderCnt     int
-	downloadersLocker sync.RWMutex
-	downloaders       []Downloader
+	inCMDChannel  chan *command
+	outCMDChannel chan<- *command
 
-	inCMDCh  chan *Command
-	outCMDCh chan *Command
-
-	once   sync.Once
-	stopCh chan struct{}
-	wg     sync.WaitGroup
-
-	maxConcurrentReq int
-	maxErrCnt        int
-
-	reqTimeInterval time.Duration
+	stopChannel chan struct{}
+	stopWg      sync.WaitGroup
+	stopOnce    sync.Once
 }
 
 func newDownloaderManager(
 	dFactory downloaderFactory,
 	downloaderCnt int,
-	maxConcurrentReq int,
-	maxErrCnt int,
-	reqTimeInterval time.Duration,
-	inCMDCh chan *Command,
-	outCMDCh chan *Command,
+	downloaderConcurrentLimit int,
+	downloaderErrCntLimit int,
+	downloaderReqHostInterval time.Duration,
+	inCMDChannel chan *command,
+	outCMDChannel chan<- *command,
 ) *downloaderManager {
 	d := &downloaderManager{
-		dFactory:         dFactory,
-		downloaderCnt:    downloaderCnt,
-		maxConcurrentReq: maxConcurrentReq,
-		maxErrCnt:        maxErrCnt,
-		reqTimeInterval:  reqTimeInterval,
-		inCMDCh:          inCMDCh,
-		outCMDCh:         outCMDCh,
-		stopCh:           make(chan struct{}),
+		dFactory:                  dFactory,
+		downloaderConcurrentLimit: downloaderConcurrentLimit,
+		downloaderReqHostInterval: downloaderReqHostInterval,
+		downloaderErrCntLimit:     downloaderErrCntLimit,
+		inCMDChannel:              inCMDChannel,
+		outCMDChannel:             outCMDChannel,
+		stopChannel:               make(chan struct{}),
 	}
 
-	for i := 0; i < d.downloaderCnt; i++ {
-		newDownloader, err := d.dFactory.newDownloader(
-			d.downloaders,
-			d.maxConcurrentReq,
-			int(math.Ceil(float64(d.downloaderCnt)*1.5)),
+	proxyList := make([]*Proxy, 0, downloaderCnt)
+	for i := 0; i < downloaderCnt; i++ {
+		curDownloader := d.dFactory.newDownloader(
+			proxyList,
+			d.downloaderConcurrentLimit,
+			d.downloaderReqHostInterval,
 		)
-		if err != nil || newDownloader == nil {
-			logrus.WithFields(logrus.Fields{
-				"FactoryName":      downloaderFactoryName(dFactory),
-				"DownloaderCNT":    downloaderCnt,
-				"MaxErrCnt":        maxErrCnt,
-				"MaxConcurrentReq": maxConcurrentReq,
-				"ReqTimeInterval":  reqTimeInterval,
-			}).Panic("Downloader Factory failed to create new downloader.")
-			return nil
-		}
-		d.downloaders = append(d.downloaders, newDownloader)
-		logrus.WithFields(logrus.Fields{
-			"Proxy": newDownloader.proxy(),
-		}).Info("Downloader Manager create new proxy for init itself.")
+		d.downloaderList = append(d.downloaderList, curDownloader)
+		proxyList = append(proxyList, curDownloader.proxy())
 	}
 
-	for i := 0; i < downloaderCnt*maxConcurrentReq; i++ {
+	for i := 0; i < downloaderCnt*downloaderConcurrentLimit; i++ {
 		go d.downloadRoutine(i)
 	}
 
 	return d
 }
 
-func (d *downloaderManager) downloadRoutine(id int) {
-	d.wg.Add(1)
-	defer d.wg.Done()
+func (d *downloaderManager) stop() {
+	d.stopOnce.Do(func() {
+		logrus.Info("DownloaderManager stopping.")
+		close(d.stopChannel)
+	})
+	d.stopWg.Wait()
+	logrus.Info("DownloaderManager stopped.")
+}
 
-	logEntry := logrus.WithField("DownloadRoutineID", id)
-	logEntry.Debug("Start download routine.")
+// go routine body function
+// recv download cmd from inCMDChannel
+// download resource acquired by command
+// if command think resource download success, put command to outCMDChannel
+// otherwise back command to inCMDChannel
+func (d *downloaderManager) downloadRoutine(routineID int) {
+	d.stopWg.Add(1)
+	defer d.stopWg.Done()
+
+	logEntry := logrus.WithFields(logrus.Fields{
+		"DownloadRoutineID": routineID,
+	})
 
 	var loop = true
 	for loop {
 		select {
-		case cmd, ok := <-d.inCMDCh:
+		case cmd, ok := <-d.inCMDChannel:
 			if !ok {
-				logEntry.Panic("Downloader Manager CMD input channel has closed.")
-			}
-
-			downloader := d.acquireDownloader(cmd)
-			if downloader == nil {
-				go func() {
-					d.wg.Add(1)
-					defer d.wg.Done()
-					logEntry.WithFields(cmd.ctx.LogrusFields()).Debug("Can not find proper downloader now. Sleep for next try.")
-					time.Sleep(d.reqTimeInterval + time.Second)
-					d.inCMDCh <- cmd
-				}()
+				logEntry.Fatal("DownloaderManager's inCMDChannel is closed!!!")
+			} else if cmd == nil {
+				logEntry.Error("Receive nil command.")
 				continue
 			}
-
-			downloader.do(cmd)
-
-			if cmd.ctx.downloaderValid() {
-				downloader.release(cmd, true)
-				if !downloader.resetErrCnt(d.maxErrCnt) {
-					d.replaceDownloader(downloader)
-				}
-
-				logEntry.WithFields(cmd.ctx.LogrusFields()).WithFields(logrus.Fields{
-					"Proxy": downloader.proxy(),
-				}).Debug("Finish One Command Download")
-				d.outCMDCh <- cmd
+			success := d.download(cmd)
+			if success {
+				d.outCMDChannel <- cmd
 			} else {
-				downloader.release(cmd, false)
-				if !downloader.increaseErrCnt(d.maxErrCnt) {
-					d.replaceDownloader(downloader)
-				}
-
-				logEntry.WithFields(cmd.ctx.LogrusFields()).WithFields(logrus.Fields{
-					"Proxy": downloader.proxy(),
-				}).Debug("Failure One Command Download")
-				d.inCMDCh <- cmd
+				go d.sleepAndReBackToCMDInChannel(cmd)
 			}
 
-		case <-d.stopCh:
+		case <-d.stopChannel:
 			loop = false
 		}
 	}
 
-	logEntry.Debug("Download routine stopped.")
+	logEntry.Debug("DownloaderManager download routine stopped.")
 }
 
-func (d *downloaderManager) replaceDownloaderNoLocker(oldD Downloader, reason string) {
-	dIndex := -1
-	for i, d2 := range d.downloaders {
-		if d2 == oldD {
-			dIndex = i
+func (d *downloaderManager) download(cmd *command) bool {
+	var (
+		bannedCount                    = 0
+		acquiredDownloader *downloader = nil
+		removedDownloader  *downloader = nil
+		removeReason                   = ""
+		success                        = false
+	)
+
+	//logrus.WithFields(cmd.logrusFields()).Info("start find downloader")
+	d.downloaderListLocker.RLock()
+	for _, curDownloader := range d.downloaderList {
+		err := curDownloader.tryAcquire(cmd, d.downloaderErrCntLimit)
+		if err == nil {
+			acquiredDownloader = curDownloader
 			break
+		} else {
+			if err == downloadErrHostBanned {
+				bannedCount++
+				if bannedCount >= len(d.downloaderList)/2 {
+					removedDownloader = curDownloader
+					removeReason = "banned too much"
+				}
+			}
 		}
 	}
-	if dIndex == -1 {
-		return
-	}
+	d.downloaderListLocker.RUnlock()
+	//logrus.WithFields(cmd.logrusFields()).Info("finish find downloader")
 
-	d.downloaders = append(d.downloaders[:dIndex], d.downloaders[dIndex+1:]...)
-	err := Singleton().DeactivateProxy(oldD.proxy())
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"Error": err,
-			"Proxy": oldD.proxy(),
-		}).Error("Deactivate proxy failed.")
-	}
-
-	newD, err := d.dFactory.newDownloader(d.downloaders, d.maxConcurrentReq, int(math.Ceil(float64(d.downloaderCnt)*1.5)))
-	if newD == nil || err != nil {
-		logrus.WithFields(logrus.Fields{
-			"OldProxy":     oldD.proxy(),
-			"FactoryError": err,
-		}).Panic("replace old downloader fail because factory can't create new old.")
-		return
-	}
-
-	d.downloaders = append(d.downloaders, newD)
-	logrus.WithFields(logrus.Fields{
-		"OldProxy": oldD.proxy(),
-		"NewProxy": newD.proxy(),
-		"Reason":   reason,
-	}).Debug("Replace old proxy.")
-}
-
-func (d *downloaderManager) replaceDownloader(oldD Downloader) {
-	d.downloadersLocker.Lock()
-	defer d.downloadersLocker.Unlock()
-	d.replaceDownloaderNoLocker(oldD, "ErrCnt Limit")
-}
-
-func (d *downloaderManager) acquireDownloader(cmd *Command) Downloader {
-	d.downloadersLocker.Lock()
-	defer d.downloadersLocker.Unlock()
-
-	var downloader Downloader = nil
-	var downloaderShouldBeReplaced Downloader = nil
-	bannedRefuseCnt := 0
-	for _, curDownloader := range d.downloaders {
-		err := curDownloader.tryAcquire(cmd, d.reqTimeInterval)
+	if acquiredDownloader != nil {
+		cmd.downloaderUsed = acquiredDownloader
+		err := acquiredDownloader.download(cmd)
+		logrus.WithFields(cmd.logrusFields()).WithFields(acquiredDownloader.logrusFields()).Info("finish download")
 		if err == nil {
-			downloader = curDownloader
-			break
-		} else if err == ERR_BANNED_HOST {
-			bannedRefuseCnt++
-			if bannedRefuseCnt >= d.downloaderCnt/2 {
-				// if half of downloader array be banned from host
-				// we think just remove some one downloader and replace new downloader
-				// for make more command download request can be handled
-				downloaderShouldBeReplaced = curDownloader
+			success = true
+		} else {
+			success = false
+			if err == downloadErrRequestError && !acquiredDownloader.checkMaxErrCnt(d.downloaderErrCntLimit) {
+				removedDownloader = acquiredDownloader
+				removeReason = "err cnt limit"
 			}
 		}
 	}
 
-	if downloaderShouldBeReplaced != nil {
-		d.replaceDownloaderNoLocker(downloaderShouldBeReplaced, "Banned Too Many")
+	if removedDownloader != nil {
+		go d.replace(removedDownloader, removeReason)
 	}
 
-	return downloader
+	return success
 }
 
-func (d *downloaderManager) Stop() {
-	logrus.Info("DownloaderManager stopping...")
-	d.once.Do(func() {
-		close(d.stopCh)
-	})
-	d.wg.Wait()
-	logrus.Info("DownloaderManager stopped.")
+func (d *downloaderManager) replace(oldDownloader *downloader, reason string) {
+	d.downloaderListLocker.Lock()
+	defer d.downloaderListLocker.Unlock()
+
+	var oldDownloaderIndex = -1
+	var proxyList = make([]*Proxy, 0, len(d.downloaderList))
+
+	for i, d2 := range d.downloaderList {
+		proxyList = append(proxyList, d2.proxy())
+		if d2 == oldDownloader {
+			oldDownloaderIndex = i
+		}
+	}
+	if oldDownloaderIndex == -1 {
+		return
+	}
+
+	newDownloader := d.dFactory.newDownloader(proxyList, d.downloaderConcurrentLimit, d.downloaderReqHostInterval)
+	if newDownloader != nil {
+		// todo
+	}
+	d.downloaderList = append(d.downloaderList[:oldDownloaderIndex], d.downloaderList[oldDownloaderIndex+1:]...)
+	d.downloaderList = append(d.downloaderList, newDownloader)
+
+	err := ProxyStorageSingleton().DeactivateProxy(oldDownloader.proxy())
+	if err != nil {
+		// todo
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"OldProxy": oldDownloader.proxy(),
+		"NewProxy": newDownloader.proxy(),
+		"Reason":   reason,
+	}).Info("replace downloader")
 }
+
+func (d *downloaderManager) sleepAndReBackToCMDInChannel(cmd *command) {
+	//time.Sleep(d.downloaderReqHostInterval)
+	d.inCMDChannel <- cmd
+}
+
+var (
+	downloadErrBadState        = errors.New("downloader's err cnt reaches limit")
+	downloadErrReqTooOften     = errors.New("request too often")
+	downloadErrHostBanned      = errors.New("request host ban downloader")
+	downloadErrConcurrentLimit = errors.New("downloader are running too many requesting")
+	downloadErrRequestError    = errors.New("downloader has requested resource, but failed")
+)
 
 type downloaderFactory interface {
-	newDownloader(downloaders []Downloader, maxConcurrentReq int, k int) (Downloader, error)
+	newDownloader(proxiesRefuse []*Proxy, concurrentLimit int, hostReqInterval time.Duration) *downloader
 }
 
-func downloaderFactoryName(factory downloaderFactory) string {
-	fVal := reflect.ValueOf(factory)
-	if fVal.Kind() == reflect.Struct {
-		return fVal.Type().Name()
+type NoProxyFastHTTPDownloaderFactory struct {
+}
+
+func (f *NoProxyFastHTTPDownloaderFactory) newDownloader(_ []*Proxy, concurrentLimit int, hostReqInterval time.Duration) *downloader {
+	return newDownloader(nil, concurrentLimit, hostReqInterval)
+}
+
+type ProxyFastHTTPDownloaderFactory struct {
+}
+
+func (f *ProxyFastHTTPDownloaderFactory) newDownloader(proxiesRefuse []*Proxy, concurrentLimit int, hostReqInterval time.Duration) *downloader {
+	proxy, err := ProxyStorageSingleton().GetRandProxyWithRefuseList(proxiesRefuse)
+	if err != nil {
+		// todo
 	}
-
-	if fVal.Kind() == reflect.Ptr && fVal.Elem().Kind() == reflect.Struct {
-		return fVal.Elem().Type().Name()
-	}
-
-	panic("can't get downloader factory name")
-}
-
-// create downloader which use proxy
-type proxyDownloaderFactory struct {
-}
-
-func (d *proxyDownloaderFactory) newDownloader(downloaders []Downloader, maxConcurrentReq int, k int) (Downloader, error) {
-	var proxy *Proxy = nil
-	for {
-		tempProxy, err := Singleton().GetRandTopKProxy(k)
-		if err != nil {
-			return nil, err
-		}
-
-		if tempProxy == nil {
-			return nil, errors.New("proxy storage generate nil proxy")
-		}
-
-		var conflict = false
-		for _, d2 := range downloaders {
-			if d2.proxy().Equal(tempProxy) {
-				conflict = true
-				break
-			}
-		}
-		if !conflict {
-			proxy = tempProxy
-			break
-		}
-	}
-
-	return newDownloaderWrapper(proxy, maxConcurrentReq), nil
-}
-
-// create downloader which does not use proxy
-type noProxyDownloaderFactory struct {
-}
-
-func (n *noProxyDownloaderFactory) newDownloader(_ []Downloader, maxConcurrentReq int, _ int) (Downloader, error) {
-	return newDownloaderWrapper(nil, maxConcurrentReq), nil
-}
-
-type Downloader interface {
-	do(cmd *Command)
-	proxy() *Proxy
-	increaseErrCnt(maxErrCnt int) bool
-	resetErrCnt(maxErrCnt int) bool
-	tryAcquire(cmd *Command, interval time.Duration) error
-	release(cmd *Command, respValid bool)
-	lastReqTime(cmd *Command) time.Time
-	banned(ctx *Context)
-}
-
-type downloaderWrapper struct {
-	*downloader
-}
-
-func newDownloaderWrapper(
-	proxy *Proxy,
-	maxConcurrentRequestCnt int,
-) *downloaderWrapper {
-	d := &downloaderWrapper{newDownloader(proxy, maxConcurrentRequestCnt)}
-	runtime.SetFinalizer(d, (*downloaderWrapper).finalizer)
-	return d
-}
-
-func (d *downloaderWrapper) finalizer() {
-	d.downloader.clearCron.Stop()
+	return newDownloader(proxy, concurrentLimit, hostReqInterval)
 }
 
 type downloader struct {
-	client                    *fasthttp.Client
-	proxyUsed                 *Proxy
-	errCntLocker              sync.Mutex
-	errCnt                    int
-	maxConcurrentReqSemaphore *utils.Semaphore
-
-	hostReqTimeLocker sync.Mutex
-	hostReqTime       map[string]time.Time
-	hostReqTimeBackup map[string]time.Time
-
-	bannedHostSet mapset.Set
-
-	clearCron *cron.Cron
+	*fastHTTPDownloader
 }
 
 func newDownloader(
 	proxy *Proxy,
-	maxConcurrentRequestCnt int,
+	concurrentLimit int,
+	hostReqInterval time.Duration,
 ) *downloader {
-	var client *fasthttp.Client
-	if proxy == nil {
-		client = &fasthttp.Client{}
+	wrapper := &downloader{
+		fastHTTPDownloader: newFastHTTPDownloader(
+			proxy,
+			concurrentLimit,
+			hostReqInterval,
+		),
+	}
+	runtime.SetFinalizer(wrapper, (*downloader).fin)
+	return wrapper
+}
+
+func (wrapper *downloader) fin() {
+	wrapper.fastHTTPDownloader.refreshCron.Stop()
+}
+
+type fastHTTPDownloader struct {
+	client    *fasthttp.Client
+	proxyUsed *Proxy
+
+	reqSemaphore    *utils.Semaphore
+	concurrentLimit int
+
+	hostReqInterval     time.Duration
+	reqTimeLocker       sync.Mutex
+	host2LastReqTimeBak map[string]time.Time
+	host2LastReqTime    map[string]time.Time
+	bannedHostSet       mapset.Set
+
+	errCntLocker sync.RWMutex
+	errCnt       int
+
+	refreshCron *cron.Cron
+}
+
+func newFastHTTPDownloader(
+	proxy *Proxy,
+	concurrentLimit int,
+	hostReqInterval time.Duration,
+) *fastHTTPDownloader {
+	d := &fastHTTPDownloader{
+		client:              nil,
+		proxyUsed:           proxy,
+		reqSemaphore:        utils.NewSemaphore(concurrentLimit),
+		concurrentLimit:     concurrentLimit,
+		hostReqInterval:     hostReqInterval,
+		host2LastReqTimeBak: make(map[string]time.Time),
+		host2LastReqTime:    make(map[string]time.Time),
+		bannedHostSet:       mapset.NewSet(),
+		errCntLocker:        sync.RWMutex{},
+		errCnt:              0,
+		refreshCron:         cron.New(),
+	}
+
+	if d.proxyUsed == nil {
+		d.client = &fasthttp.Client{}
 	} else {
-		client = &fasthttp.Client{Dial: proxy.FastHTTPDialHTTPProxy()}
+		d.client = &fasthttp.Client{Dial: d.proxyUsed.FastHTTPDialHTTPProxy()}
 	}
 
-	d := &downloader{
-		client:                    client,
-		proxyUsed:                 proxy,
-		maxConcurrentReqSemaphore: utils.NewSemaphore(maxConcurrentRequestCnt),
-		hostReqTime:               make(map[string]time.Time),
-		hostReqTimeBackup:         make(map[string]time.Time),
-		bannedHostSet:             mapset.NewSet(),
-		clearCron:                 cron.New(),
-	}
+	d.refreshCron.AddFunc("*/5 * * * *", d.refreshHostInfo)
+	d.refreshCron.Start()
 
-	_, err := d.clearCron.AddFunc("*/10 * * * *", d.clearUnusedHostInfo)
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"Error": err,
-		}).Fatal("add cron function failure")
-	}
-	d.clearCron.Start()
 	return d
 }
 
-func (d *downloader) clearUnusedHostInfo() {
-	d.hostReqTimeLocker.Lock()
-	defer d.hostReqTimeLocker.Unlock()
-
-	for host, reqTime := range d.hostReqTime {
-		if time.Now().Sub(reqTime).Minutes() >= 10.0 {
-			delete(d.hostReqTime, host)
-			delete(d.hostReqTimeBackup, host)
-			d.bannedHostSet.Remove(host)
-			logrus.WithFields(logrus.Fields{
-				"Host":            host,
-				"LastRequestTime": reqTime,
-				"Proxy":           d.proxy(),
-			}).Info("Long time no request, delete host request time info.")
-		}
+func (d *fastHTTPDownloader) logrusFields() logrus.Fields {
+	return logrus.Fields{
+		"Proxy":  d.proxyUsed,
+		"ErrCnt": d.errCnt,
 	}
 }
 
-func (d *downloader) do(cmd *Command) {
-	cmd.ctx.downloader = d
-	cmd.ctx.Response.Reset()
-	cmd.ctx.RespErr = d.client.DoTimeout(cmd.ctx.Request, cmd.ctx.Response, cmd.ctx.task.requestTimeout)
+// clear information of host which is not visited long time
+func (d *fastHTTPDownloader) refreshHostInfo() {
+	d.reqTimeLocker.Lock()
+	defer d.reqTimeLocker.Unlock()
+
+	nt := time.Now()
+	deletedHostList := make([]string, 0)
+	for host, reqTime := range d.host2LastReqTime {
+		if reqTime.Add(time.Minute * 5).Before(nt) {
+			deletedHostList = append(deletedHostList, host)
+		}
+	}
+
+	for _, host := range deletedHostList {
+		delete(d.host2LastReqTimeBak, host)
+		delete(d.host2LastReqTime, host)
+		d.bannedHostSet.Remove(host)
+	}
 }
 
-func (d *downloader) proxy() *Proxy {
-	return d.proxyUsed
+func (d *fastHTTPDownloader) tryAcquire(cmd *command, errCntLimit int) error {
+	if d.errCnt >= errCntLimit {
+		return downloadErrBadState
+	}
+
+	reqHost := string(cmd.request().Host())
+	if d.isBanned(reqHost) {
+		return downloadErrHostBanned
+	}
+
+	if !d.reqSemaphore.TryAcquire() {
+		return downloadErrConcurrentLimit
+	}
+
+	d.reqTimeLocker.Lock()
+	defer d.reqTimeLocker.Unlock()
+
+	lastReqTime, ok := d.host2LastReqTime[reqHost]
+	if !ok {
+		lastReqTime = time.Unix(0, 0)
+	}
+
+	if lastReqTime.Add(d.hostReqInterval).After(time.Now()) {
+		d.reqSemaphore.Release()
+		return downloadErrReqTooOften
+	}
+	d.host2LastReqTimeBak[reqHost] = lastReqTime
+	d.host2LastReqTime[reqHost] = time.Now()
+	return nil
 }
 
-func (d *downloader) increaseErrCnt(maxErrCnt int) bool {
+func (d *fastHTTPDownloader) increaseErrCnt() {
 	d.errCntLocker.Lock()
 	defer d.errCntLocker.Unlock()
 	d.errCnt++
+}
+
+func (d *fastHTTPDownloader) resetErrCnt() {
+	d.errCntLocker.Lock()
+	defer d.errCntLocker.Unlock()
+	d.errCnt = 0
+}
+
+func (d *fastHTTPDownloader) checkMaxErrCnt(maxErrCnt int) bool {
+	d.errCntLocker.RLock()
+	defer d.errCntLocker.RUnlock()
 	return d.errCnt < maxErrCnt
 }
 
-func (d *downloader) resetErrCnt(maxErrCnt int) bool {
-	d.errCntLocker.Lock()
-	defer d.errCntLocker.Unlock()
-	if d.errCnt < maxErrCnt {
-		d.errCnt = 0
-		return true
-	} else {
-		return false
-	}
+func (d *fastHTTPDownloader) proxy() *Proxy {
+	return d.proxyUsed
 }
 
-func (d *downloader) lastReqTime(cmd *Command) time.Time {
-	d.hostReqTimeLocker.Lock()
-	defer d.hostReqTimeLocker.Unlock()
-	lastReqTime, ok := d.hostReqTime[string(cmd.ctx.Request.Host())]
-	if ok {
-		return lastReqTime
-	} else {
-		return time.Unix(0, 0)
-	}
+func (d *fastHTTPDownloader) beBaned(cmd *command) {
+	d.bannedHostSet.Add(string(cmd.request().Host()))
 }
 
-func (d *downloader) tryAcquire(cmd *Command, interval time.Duration) error {
-	if d.bannedHostSet.Contains(string(cmd.ctx.Request.Host())) {
-		return ERR_BANNED_HOST
-	}
+func (d *fastHTTPDownloader) isBanned(host string) bool {
+	return d.bannedHostSet.Contains(host)
+}
 
-	if !d.maxConcurrentReqSemaphore.TryAcquire() {
-		return ERR_CONCURRENT_REQUEST_LIMIT
-	}
+func (d *fastHTTPDownloader) download(cmd *command) error {
+	defer d.reqSemaphore.Release()
 
-	d.hostReqTimeLocker.Lock()
-	defer d.hostReqTimeLocker.Unlock()
-	lastReqTime, ok := d.hostReqTime[string(cmd.ctx.Request.Host())]
-	if !ok {
-		d.hostReqTimeBackup[string(cmd.ctx.Request.Host())] = time.Unix(0, 0)
-		d.hostReqTime[string(cmd.ctx.Request.Host())] = time.Now()
+	// start download
+	err := d.client.DoTimeout(cmd.request(), cmd.response(), cmd.timeout())
+	valid := cmd.downloadFinished(err)
+
+	// command check download result valid
+	d.reqTimeLocker.Lock()
+	defer d.reqTimeLocker.Unlock()
+	reqHost := string(cmd.request().Host())
+	if valid {
+		// download valid
+		d.host2LastReqTime[reqHost] = time.Now()
+		d.resetErrCnt()
 		return nil
 	} else {
-		if lastReqTime.Add(interval).Before(time.Now()) {
-			d.hostReqTimeBackup[string(cmd.ctx.Request.Host())] = lastReqTime
-			d.hostReqTime[string(cmd.ctx.Request.Host())] = time.Now()
-			return nil
-		} else {
-			d.maxConcurrentReqSemaphore.Release()
-			return ERR_REQUEST_INTERVAL_LIMIT
-		}
-	}
-}
-
-func (d *downloader) banned(ctx *Context) {
-	d.bannedHostSet.Add(string(ctx.Request.Host()))
-}
-
-func (d *downloader) release(cmd *Command, respValid bool) {
-	defer d.maxConcurrentReqSemaphore.Release()
-
-	d.hostReqTimeLocker.Lock()
-	defer d.hostReqTimeLocker.Unlock()
-	if respValid {
-		d.hostReqTime[string(cmd.ctx.Request.Host())] = time.Now()
-	} else {
-		d.hostReqTime[string(cmd.ctx.Request.Host())] = d.hostReqTimeBackup[string(cmd.ctx.Request.Host())]
+		// download invalid
+		// back store previous last req time
+		d.host2LastReqTime[reqHost] = d.host2LastReqTimeBak[reqHost]
+		d.increaseErrCnt()
+		return downloadErrRequestError
 	}
 }

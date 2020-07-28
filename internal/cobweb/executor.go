@@ -7,36 +7,42 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// Executor is a main part of cobweb
+// it accepts rule and creates task according to that.
+//
+//
 type Executor struct {
-	runningLocker sync.RWMutex
+	dManager  *downloaderManager
+	parser    *parser
+	pipeliner *pipeliner
+
+	downloadCMDChannel  chan *command
+	parseCMDChannel     chan *command
+	pipeItemInfoChannel chan *itemInfo
+
+	stopOnce sync.Once
+	stopWg   sync.WaitGroup
+
+	runningLocker sync.Mutex
 	running       bool
-
-	downloadChan chan *Command
-	dManager     *downloaderManager
-
-	processChan chan *Command
-	processor   *processor
-
-	once sync.Once
-	wg   sync.WaitGroup
 }
 
-func NewDefaultNoProxyExecutor() *Executor {
+func NewNoProxyDefaultExecutor() *Executor {
 	return NewExecutor(
-		&noProxyDownloaderFactory{},
+		&NoProxyFastHTTPDownloaderFactory{},
 		1,
 		20,
 		10,
-		time.Second*3,
+		time.Second*2,
 	)
 }
 
 func NewDefaultExecutor() *Executor {
 	return NewExecutor(
-		&proxyDownloaderFactory{},
+		&ProxyFastHTTPDownloaderFactory{},
 		100,
+		5,
 		10,
-		15,
 		time.Second*3,
 	)
 }
@@ -44,89 +50,115 @@ func NewDefaultExecutor() *Executor {
 func NewExecutor(
 	dFactory downloaderFactory,
 	downloaderCnt int,
-	maxConcurrentReq int,
-	maxErrCnt int,
-	reqTimeInterval time.Duration,
+	downloaderConcurrentLimit int,
+	downloaderErrCntLimit int,
+	downloaderReqHostInterval time.Duration,
 ) *Executor {
-	if reqTimeInterval >= time.Second {
-		reqTimeInterval -= time.Second
-
+	e := &Executor{
+		downloadCMDChannel:  make(chan *command, 100),
+		parseCMDChannel:     make(chan *command, 100),
+		pipeItemInfoChannel: make(chan *itemInfo, 100),
 	}
 
-	downloadChan := make(chan *Command)
-	processChan := make(chan *Command)
-	dm := newDownloaderManager(
+	e.dManager = newDownloaderManager(
 		dFactory,
 		downloaderCnt,
-		maxConcurrentReq,
-		maxErrCnt,
-		reqTimeInterval,
-		downloadChan,
-		processChan,
+		downloaderConcurrentLimit,
+		downloaderErrCntLimit,
+		downloaderReqHostInterval,
+		e.downloadCMDChannel,
+		e.parseCMDChannel,
 	)
-	p := newProcessor(processChan, downloadChan)
 
-	e := &Executor{
-		downloadChan: downloadChan,
-		dManager:     dm,
-		processChan:  processChan,
-		processor:    p,
-		running:      true,
-	}
+	e.parser = newParser(e.parseCMDChannel, e.downloadCMDChannel, e.pipeItemInfoChannel)
+	e.pipeliner = newPipeliner(e.pipeItemInfoChannel)
+	e.running = true
+
 	return e
 }
 
+// accept rule and create task for it
+// if executor is not running return nil
 func (e *Executor) AcceptRule(rule BaseRule) *Task {
-	e.runningLocker.RLock()
-	defer e.runningLocker.RUnlock()
-	if e.running {
-		task := newTask(rule)
-		if task == nil {
-			return nil
-		}
-
-		logrus.WithFields(logrus.Fields{
-			"TaskName": task.Name(),
-		}).Info("Accept Rule")
-
-		cmds := task.extractCommands()
-		for _, cmd := range cmds {
-			e.downloadChan <- cmd
-		}
-		return task
-	} else {
+	e.runningLocker.Lock()
+	defer e.runningLocker.Unlock()
+	if !e.running {
 		return nil
 	}
+
+	task := newTaskFromRule(rule)
+	if task == nil {
+		return nil
+	}
+
+	initCMDs := task.initCommands()
+	for _, cmd := range initCMDs {
+		// append initial cmd to download cmd channel
+		e.downloadCMDChannel <- cmd
+	}
+	logrus.WithFields(logrus.Fields{
+		"TaskName":     task.Name(),
+		"InitCMDCount": len(initCMDs),
+	}).Info("Cobweb accept rule.")
+	return task
 }
 
 func (e *Executor) Stop() {
 	e.runningLocker.Lock()
 	defer e.runningLocker.Unlock()
-	e.once.Do(func() {
-		logrus.Info("Executor stopping...")
-		e.running = false
-		go e.dropCMDChan(e.downloadChan, "Download Command Channel")
-		go e.dropCMDChan(e.processChan, "Process Command Channel")
-		e.dManager.Stop()
-		e.processor.Stop()
-		close(e.downloadChan)
-		close(e.processChan)
+	if !e.running {
+		logrus.Info("Cobweb executor is not running.")
+		return
+	}
+
+	e.stopOnce.Do(func() {
+		logrus.Info("Cobweb executor stopping...")
+
+		go e.dropCommandUntilClosed(e.downloadCMDChannel, "DownloadCMDChannel")
+		go e.dropCommandUntilClosed(e.parseCMDChannel, "ParseCMDChannel")
+		go e.dropItemInfoUntilChannelClosed(e.pipeItemInfoChannel, "PipeItemInfoChannel")
+
+		e.dManager.stop()
+		e.parser.stop()
+		e.pipeliner.stop()
+
+		close(e.downloadCMDChannel)
+		close(e.parseCMDChannel)
+		close(e.pipeItemInfoChannel)
 	})
-	e.wg.Wait()
-	logrus.Info("Executor stopped.")
+
+	e.stopWg.Wait()
+	e.running = false
+	logrus.Info("Cobweb executor stopped.")
 }
 
-func (e *Executor) dropCMDChan(ch <-chan *Command, chName string) {
-	e.wg.Add(1)
-	defer e.wg.Done()
+// drop all data in channel until closed
+func (e *Executor) dropCommandUntilClosed(ch chan *command, chKind string) {
+	e.stopWg.Add(1)
+	defer e.stopWg.Done()
 
-	droppedCMDCount := 0
-	for cmd := range ch {
-		logrus.WithFields(cmd.ctx.LogrusFields()).WithField("ChanName", chName).Debug("Drop Command")
-		droppedCMDCount++
+	droppedDataCount := 0
+	for _ = range ch {
+		droppedDataCount++
 	}
+
 	logrus.WithFields(logrus.Fields{
-		"ChanName":       chName,
-		"DropedCMDCount": droppedCMDCount,
-	}).Info("Drop Channel Finished, Channel Closed")
+		"DroppedDataCnt": droppedDataCount,
+		"ChannelKind":    chKind,
+	}).Info("finish drop channel data, channel has been closed")
+}
+
+func (e *Executor) dropItemInfoUntilChannelClosed(ch chan *itemInfo, chKind string) {
+	e.stopWg.Add(1)
+	defer e.stopWg.Done()
+
+	droppedDataCount := 0
+	for _ = range ch {
+		droppedDataCount++
+	}
+
+	logrus.WithFields(logrus.Fields{
+		"DroppedDataCnt": droppedDataCount,
+		"ChannelKind":    chKind,
+	}).Info("finish drop channel data, channel has been closed")
 }

@@ -6,124 +6,132 @@ import (
 	"io/ioutil"
 	"os"
 	"path"
+	"runtime"
 	"sync"
-	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
-type ItemInfo struct {
-	task *Task
-	item interface{}
-}
-
-// Pipeline send structual data into certain output device
-// for example, stdout, mysql, sqlite, redis
 type Pipeline interface {
-	Pipe(info *ItemInfo)
+	Pipe(info *itemInfo)
 	Close()
 }
 
-type StdoutPipeline struct{}
+type itemInfo struct {
+	ctx  *Context
+	item interface{}
+}
 
-func (p *StdoutPipeline) Pipe(info *ItemInfo) {
-	j, err := json.MarshalIndent(info.item, "", "\t")
-	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"Item": info.item,
-		}).Error("StdoutPipeline marshal item data to json failure.")
-		return
+func (i *itemInfo) logrusFields() logrus.Fields {
+	return i.ctx.logrusFields()
+}
+
+type pipeliner struct {
+	inItemInfoChannel <-chan *itemInfo
+
+	stopOnce    sync.Once
+	stopWg      sync.WaitGroup
+	stopChannel chan struct{}
+}
+
+func newPipeliner(inItemInfoChannel <-chan *itemInfo) *pipeliner {
+	p := &pipeliner{
+		inItemInfoChannel: inItemInfoChannel,
+		stopOnce:          sync.Once{},
+		stopWg:            sync.WaitGroup{},
+		stopChannel:       make(chan struct{}),
 	}
-	fmt.Println(string(j))
+
+	for i := 0; i < runtime.NumCPU()*2; i++ {
+		go p.pipelineRoutine(i)
+	}
+
+	return p
 }
 
-func (p *StdoutPipeline) Close() {
-
+func (p *pipeliner) stop() {
+	p.stopOnce.Do(func() {
+		logrus.Info("Pipeline is stopping...")
+		close(p.stopChannel)
+	})
+	p.stopWg.Wait()
+	logrus.Info("Pipeline has stopped...")
 }
 
-const filePipelineDefaultFolderName = "filepipeline"
+// get itemInfo from inItemInfoChannel pipe it proper Pipeline indicated by command
+func (p *pipeliner) pipelineRoutine(routineID int) {
+	p.stopWg.Add(1)
+	logEntry := logrus.WithField("RoutineID", routineID)
+	defer func() {
+		logEntry.Debug("Pipeliner routine has stopped.")
+		p.stopWg.Done()
+	}()
+
+	var loop = true
+	for loop {
+		select {
+		case info, ok := <-p.inItemInfoChannel:
+			if !ok {
+				logEntry.Fatal("InItemInfoChannel has closed, bad usage.")
+			} else if info == nil {
+				logEntry.Error("ItemInfo is nil.")
+				continue
+			}
+			info.ctx.cmd.pipe(info)
+		case <-p.stopChannel:
+			loop = false
+		}
+	}
+}
+
+type JsonStdoutPipeline struct {
+}
+
+func (p *JsonStdoutPipeline) Pipe(info *itemInfo) {
+	//jd, err := json.MarshalIndent(info.item, "", "")
+	jd, err := json.Marshal(info.item)
+	if err != nil {
+
+	}
+	fmt.Println(string(jd))
+}
+
+func (p *JsonStdoutPipeline) Close() {
+
+}
 
 type JsonFilePipeline struct {
-	filepath  string
-	locker    sync.Mutex
-	itemInfos []*ItemInfo
+	infos []*itemInfo
 }
 
-func NewJFilePipeline(filepath ...string) *JsonFilePipeline {
-	switch len(filepath) {
-	case 0:
-		return &JsonFilePipeline{}
-	case 1:
-		return &JsonFilePipeline{filepath: filepath[0]}
-	default:
-		logrus.WithFields(logrus.Fields{
-			"FilePathArg": filepath,
-		}).Panic("argument filepath len large than 1")
-		return nil
-	}
-}
-
-func (p *JsonFilePipeline) Pipe(info *ItemInfo) {
-	p.locker.Lock()
-	defer p.locker.Unlock()
-	p.itemInfos = append(p.itemInfos, info)
+func (p *JsonFilePipeline) Pipe(info *itemInfo) {
+	p.infos = append(p.infos, info)
 }
 
 func (p *JsonFilePipeline) Close() {
-	p.locker.Lock()
-	defer p.locker.Unlock()
-	if len(p.itemInfos) == 0 {
+	if len(p.infos) == 0 {
 		return
 	}
 
-	var filePath string
-	if p.filepath == "" {
-		fileName := fmt.Sprintf("%v-%v.json", p.itemInfos[0].task.Name(), time.Now().Format("2006-01-02 15-04-05"))
-		filePath = path.Join("instance", "cobweb-pipe", "json-file-pipeline", fileName)
-	} else {
-		filePath = path.Join("instance", p.filepath)
-	}
-
-	err := os.MkdirAll(path.Dir(filePath), os.ModeDir)
+	jsonFilePath := path.Join(p.infos[0].ctx.cmd.task.folderPath(), "items.json")
+	err := os.MkdirAll(path.Dir(jsonFilePath), os.ModeDir)
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"Error":    err,
-			"FilePath": filePath,
-			"TaskName": p.itemInfos[0].task.Name(),
-		}).Error("JsonFilePipeline create directory failure.")
-		return
+		// todo
 	}
 
-	dataArray := make([]interface{}, 0, len(p.itemInfos))
-	for _, info := range p.itemInfos {
-		if info.item == nil {
-			logrus.WithFields(logrus.Fields{}).Fatal("")
-		}
-		dataArray = append(dataArray, info.item)
+	items := make([]interface{}, 0, len(p.infos))
+	for _, info := range p.infos {
+		items = append(items, info.item)
 	}
-
-	j, err := json.MarshalIndent(dataArray, "", "\t")
+	j, err := json.MarshalIndent(items, "", "\t")
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"Error":    err,
-			"FilePath": filePath,
-			"TaskName": p.itemInfos[0].task.Name(),
-		}).Error("Json marshal item data array failure.")
-		return
+		// todo
 	}
 
-	err = ioutil.WriteFile(filePath, j, os.ModePerm)
+	err = ioutil.WriteFile(jsonFilePath, j, os.ModePerm)
 	if err != nil {
-		logrus.WithFields(logrus.Fields{
-			"Error":    err,
-			"FilePath": filePath,
-			"TaskName": p.itemInfos[0].task.Name(),
-		}).Error("Write json represent to file failure.")
-		return
+		// todo
 	}
 
-	logrus.WithFields(logrus.Fields{
-		"FilePath": filePath,
-		"TaskName": p.itemInfos[0].task.Name(),
-	}).Info("JsonFilePipeline write finish.")
+	logrus.WithField("JsonFilePath", jsonFilePath).Info("JsonFilePipeline saved items.")
 }

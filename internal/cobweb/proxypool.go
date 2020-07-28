@@ -122,7 +122,7 @@ func (p *ProxyPool) checkProxyPool() {
 
 	startTime := time.Now()
 
-	proxies, err := Singleton().GetAllProxy()
+	proxies, err := ProxyStorageSingleton().GetAllProxy()
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"Error": err,
@@ -188,7 +188,7 @@ func (p *ProxyPool) checkProxy(
 			if originVal, ok := val["origin"]; ok {
 				origin, ok := originVal.(string)
 				if ok && origin == proxy.Host {
-					err := Singleton().ActivateProxy(proxy)
+					err := ProxyStorageSingleton().ActivateProxy(proxy)
 					if err != nil {
 						logrus.WithFields(logrus.Fields{
 							"Error": err,
@@ -213,7 +213,7 @@ func (p *ProxyPool) checkProxy(
 		"Error":    err,
 	}).Debug("DeActivate Proxy")
 
-	err = Singleton().DeactivateProxy(proxy)
+	err = ProxyStorageSingleton().DeactivateProxy(proxy)
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"Error": err,
