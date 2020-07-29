@@ -13,8 +13,8 @@ type MeizituRule struct {
 
 func (r *MeizituRule) InitLinks() []string {
 	links := make([]string, 0)
-	for i := 0; i < 3; i++ {
-		links = append(links, fmt.Sprintf("https://www.lnlnl.cn/meizitu/%v/", i))
+	for i := 0; i < 1; i++ {
+		links = append(links, fmt.Sprintf("https://www.lnlnl.cn/meizitu/%v/", i+1))
 	}
 	return links
 }
