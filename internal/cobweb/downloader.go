@@ -2,6 +2,7 @@ package cobweb
 
 import (
 	"errors"
+	"math"
 	"runtime"
 	"sync"
 	"time"
@@ -149,7 +150,7 @@ func (d *downloaderManager) download(cmd *command) bool {
 	}
 	d.downloaderListLocker.RUnlock()
 
-	if bannedCount+badStateCount >= len(d.downloaderList)/2 {
+	if bannedCount+badStateCount >= int(math.Ceil(float64(len(d.downloaderList))/2.0)) {
 		d.cleanDownloaderList(cmd)
 	}
 

@@ -78,7 +78,7 @@ type commandBuilder struct {
 func newCommandBuilder(task *Task) *commandBuilder {
 	return &commandBuilder{
 		task:            task,
-		userAgent:       "cobweb",
+		userAgent:       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.97 Safari/537.36",
 		downloadTimeout: DefaultDownloadTimeout,
 		cookies:         make(map[string]string),
 		contextData:     make(H),

@@ -50,6 +50,14 @@ func (this *Proxy) Equal(proxy *Proxy) bool {
 	return this.Host == proxy.Host && this.Port == proxy.Port
 }
 
+func (this *Proxy) Json() string {
+	j, err := json.MarshalIndent(this, "", "\t")
+	if err != nil {
+		return ""
+	}
+	return string(j)
+}
+
 type ProxyPool struct {
 	e         *Executor
 	startOnce sync.Once
@@ -81,7 +89,7 @@ func NewProxyPool(
 	}
 
 	p.workCron.AddFunc("*/5 * * * *", p.checkProxyPool)
-	p.workCron.AddFunc("* */12 * * *", p.fetchProxy)
+	//p.workCron.AddFunc("* */12 * * *", p.fetchProxy)
 
 	return p
 }
@@ -102,7 +110,15 @@ func (p *ProxyPool) Stop() {
 }
 
 func (p *ProxyPool) fetchProxy() {
+	tasks := make([]*Task, 0, len(proxyFetchRuleCreators))
+	for _, creator := range proxyFetchRuleCreators {
+		t := p.e.AcceptRule(creator())
+		tasks = append(tasks, t)
+	}
 
+	for _, task := range tasks {
+		task.Wait()
+	}
 }
 
 func (p *ProxyPool) checkProxyPool() {

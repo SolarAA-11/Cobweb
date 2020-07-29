@@ -28,10 +28,10 @@ type AbsProxyStorage interface {
 }
 
 var absStorageSingleton AbsProxyStorage
-var once sync.Once
+var dbStorageOnce sync.Once
 
 func ProxyStorageSingleton() AbsProxyStorage {
-	once.Do(func() {
+	dbStorageOnce.Do(func() {
 		absStorageSingleton = newDBProxyStorage()
 	})
 	return absStorageSingleton
