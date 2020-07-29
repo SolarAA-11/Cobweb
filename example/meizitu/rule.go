@@ -2,7 +2,6 @@ package meizitu
 
 import (
 	"fmt"
-	"path"
 
 	"github.com/SolarDomo/Cobweb/internal/cobweb"
 	"github.com/valyala/fasthttp"
@@ -14,7 +13,7 @@ type MeizituRule struct {
 
 func (r *MeizituRule) InitLinks() []string {
 	links := make([]string, 0)
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 3; i++ {
 		links = append(links, fmt.Sprintf("https://www.lnlnl.cn/meizitu/%v/", i))
 	}
 	return links
@@ -45,9 +44,14 @@ func (r *MeizituRule) parseDetailPage(ctx *cobweb.Context) {
 
 func getExtention(urlstring string) string {
 	uri := fasthttp.AcquireURI()
+	defer fasthttp.ReleaseURI(uri)
 	err := uri.Parse(nil, []byte(urlstring))
 	if err != nil {
 		return ""
 	}
-	return path.Ext(string(uri.LastPathSegment()))
+	ext := string(uri.LastPathSegment())
+	if len(ext) != 0 && ext[0] == '.' {
+		ext = ext[1:]
+	}
+	return ext
 }
