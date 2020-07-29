@@ -80,7 +80,7 @@ func NewProxyPool(
 		stopCh:              make(chan struct{}),
 	}
 
-	p.workCron.AddFunc("*/1 * * * *", p.checkProxyPool)
+	p.workCron.AddFunc("*/5 * * * *", p.checkProxyPool)
 	p.workCron.AddFunc("* */12 * * *", p.fetchProxy)
 
 	return p
@@ -197,21 +197,21 @@ func (p *ProxyPool) checkProxy(
 					} else {
 						atomic.AddInt32(pActivatedCounter, 1)
 					}
-					logrus.WithFields(logrus.Fields{
-						"Proxy":    proxy,
-						"RespBody": string(body),
-					}).Debug("Activate Proxy")
+					//logrus.WithFields(logrus.Fields{
+					//	"Proxy":    proxy,
+					//	"RespBody": string(body),
+					//}).Debug("Activate Proxy")
 					return
 				}
 			}
 		}
 	}
 
-	logrus.WithFields(logrus.Fields{
-		"Proxy":    proxy,
-		"RespBody": string(body),
-		"Error":    err,
-	}).Debug("DeActivate Proxy")
+	//logrus.WithFields(logrus.Fields{
+	//	"Proxy":    proxy,
+	//	"RespBody": string(body),
+	//	"Error":    err,
+	//}).Debug("DeActivate Proxy")
 
 	err = ProxyStorageSingleton().DeactivateProxy(proxy)
 	if err != nil {

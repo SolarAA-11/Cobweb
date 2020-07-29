@@ -12,6 +12,19 @@ import (
 
 type ParseErrorKind int
 
+func (kind ParseErrorKind) String() string {
+	switch kind {
+	case ParseHTMLError:
+		return "ParseHTMLError"
+	case HTMLNodeNotFoundError:
+		return "HTMLNodeNotFoundError"
+	case UnknownParseError:
+		return "UnknownParseError"
+	default:
+		return "Unknown"
+	}
+}
+
 const (
 	UnknownParseError ParseErrorKind = iota
 	ParseHTMLError
@@ -177,7 +190,9 @@ func (c *command) request() *fasthttp.Request {
 }
 
 func (c *command) beBanned() {
-	c.downloaderUsed.beBaned(c)
+	if c.downloaderUsed != nil {
+		c.downloaderUsed.beBaned(c)
+	}
 }
 
 func (c *command) response() *fasthttp.Response {
@@ -191,8 +206,8 @@ func (c *command) timeout() time.Duration {
 func (c *command) downloadFinished(downloadError error) bool {
 	c.task.onDownloadFinishCallback(c.createContext())
 	c.downloadError = downloadError
-	return c.downloadError == nil
-	//return c.downloadError == nil && c.downloadResponse.StatusCode() == 200
+	//return c.downloadError == nil
+	return c.downloadError == nil && c.downloadResponse.StatusCode() == 200
 }
 
 // use coreCommand to handle context, parse required resource to generate new command and itemInfo

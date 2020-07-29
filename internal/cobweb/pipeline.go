@@ -63,7 +63,6 @@ func (p *pipeliner) pipelineRoutine(routineID int) {
 	p.stopWg.Add(1)
 	logEntry := logrus.WithField("RoutineID", routineID)
 	defer func() {
-		logEntry.Debug("Pipeliner routine has stopped.")
 		p.stopWg.Done()
 	}()
 

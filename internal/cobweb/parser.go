@@ -51,12 +51,10 @@ func (p *parser) stop() {
 // get new command and item info send to outCMDChannel and outItemInfoChannel
 func (p *parser) parseRoutine(routineID int) {
 	p.stopWg.Add(1)
-
-	logEntry := logrus.WithField("RoutineID", routineID)
 	defer func() {
 		p.stopWg.Done()
-		logEntry.Debug("parse routine stopped.")
 	}()
+	logEntry := logrus.WithField("RoutineID", routineID)
 
 	var loop = true
 	for loop {

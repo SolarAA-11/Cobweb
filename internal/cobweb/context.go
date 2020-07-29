@@ -41,9 +41,7 @@ type Context struct {
 	data   H
 }
 
-func newContext(
-	cmd *command,
-) *Context {
+func newContext(cmd *command) *Context {
 	return &Context{
 		cmd:  cmd,
 		data: cmd.contextData.clone(),

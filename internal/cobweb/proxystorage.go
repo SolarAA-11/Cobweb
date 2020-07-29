@@ -23,6 +23,7 @@ type AbsProxyStorage interface {
 	GetTopKProxyList(k int) ([]*Proxy, error)
 	GetRandTopKProxy(k int) (*Proxy, error)
 	GetAllProxy() ([]*Proxy, error)
+	GetProxyListWithRefuseList(refuseList []*Proxy, count int) ([]*Proxy, error)
 	GetRandProxyWithRefuseList([]*Proxy) (*Proxy, error)
 }
 
@@ -137,9 +138,7 @@ func (this *dbProxyStorage) DeactivateProxy(proxy *Proxy) error {
 	if err != nil {
 		return err
 	}
-
-	proxyInDB.Score--
-	err = this.dbConn.Save(proxyInDB).Error
+	err = this.dbConn.Model(proxyInDB).Where("host", proxy.Host).Update("score", gorm.Expr("score - 1")).Error
 	if err != nil {
 		logrus.WithFields(logrus.Fields{
 			"Error": err,
@@ -182,6 +181,21 @@ func (this *dbProxyStorage) GetAllProxy() ([]*Proxy, error) {
 		return nil, err
 	}
 	return proxyList, nil
+}
+
+func (this *dbProxyStorage) GetProxyListWithRefuseList(refuseList []*Proxy, count int) ([]*Proxy, error) {
+	conn := this.dbConn.Model(&Proxy{})
+	if len(refuseList) != 0 {
+		hostList := make([]string, 0, len(refuseList))
+		for _, p := range refuseList {
+			hostList = append(hostList, p.Host)
+		}
+		conn = conn.Not("host", hostList)
+	}
+
+	proxyList := make([]*Proxy, 0, count)
+	err := conn.Order("score desc").Limit(count).Find(&proxyList).Error
+	return proxyList, err
 }
 
 func (this *dbProxyStorage) GetRandProxyWithRefuseList(refuseList []*Proxy) (*Proxy, error) {

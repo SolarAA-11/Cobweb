@@ -12,7 +12,7 @@ import (
 //
 //
 type Executor struct {
-	dManager  *downloaderManager
+	dManager  absDownloaderManager
 	parser    *parser
 	pipeliner *pipeliner
 
@@ -41,7 +41,7 @@ func NewDefaultExecutor() *Executor {
 	return NewExecutor(
 		&ProxyFastHTTPDownloaderFactory{},
 		100,
-		5,
+		2,
 		10,
 		time.Second*3,
 	)
@@ -55,9 +55,9 @@ func NewExecutor(
 	downloaderReqHostInterval time.Duration,
 ) *Executor {
 	e := &Executor{
-		downloadCMDChannel:  make(chan *command, 100),
-		parseCMDChannel:     make(chan *command, 100),
-		pipeItemInfoChannel: make(chan *itemInfo, 100),
+		downloadCMDChannel:  make(chan *command, 500),
+		parseCMDChannel:     make(chan *command, 500),
+		pipeItemInfoChannel: make(chan *itemInfo, 500),
 	}
 
 	e.dManager = newDownloaderManager(
@@ -68,6 +68,26 @@ func NewExecutor(
 		downloaderReqHostInterval,
 		e.downloadCMDChannel,
 		e.parseCMDChannel,
+	)
+
+	e.parser = newParser(e.parseCMDChannel, e.downloadCMDChannel, e.pipeItemInfoChannel)
+	e.pipeliner = newPipeliner(e.pipeItemInfoChannel)
+	e.running = true
+
+	return e
+}
+
+func NewExecutorWithSimpleDownloaderManager() *Executor {
+	e := &Executor{
+		downloadCMDChannel:  make(chan *command, 100),
+		parseCMDChannel:     make(chan *command, 100),
+		pipeItemInfoChannel: make(chan *itemInfo, 100),
+	}
+
+	e.dManager = newSimpleDownloaderManager(
+		e.downloadCMDChannel,
+		e.parseCMDChannel,
+		200,
 	)
 
 	e.parser = newParser(e.parseCMDChannel, e.downloadCMDChannel, e.pipeItemInfoChannel)
@@ -93,7 +113,6 @@ func (e *Executor) AcceptRule(rule BaseRule) *Task {
 
 	initCMDs := task.initCommands()
 	for _, cmd := range initCMDs {
-		// append initial cmd to download cmd channel
 		e.downloadCMDChannel <- cmd
 	}
 	logrus.WithFields(logrus.Fields{

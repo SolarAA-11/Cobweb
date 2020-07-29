@@ -4,6 +4,8 @@ import (
 	"io/ioutil"
 	"testing"
 
+	mapset "github.com/deckarep/golang-set"
+
 	"github.com/rs/xid"
 	"github.com/valyala/fasthttp"
 )
@@ -48,8 +50,9 @@ func (suit *testSuits) WithBytes(callback OnParseCallback, data []byte, contextD
 	cmd := &command{
 		id: xid.New(),
 		task: &Task{
-			name: "TestSuit",
-			id:   xid.New(),
+			name:        "TestSuit",
+			id:          xid.New(),
+			itemTypeSet: mapset.NewSet(),
 		},
 		contextData: contextData,
 	}
