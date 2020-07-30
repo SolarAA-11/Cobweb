@@ -33,7 +33,7 @@ func NewNoProxyDefaultExecutor() *Executor {
 		1,
 		20,
 		10,
-		time.Second*2,
+		time.Second*3,
 	)
 }
 

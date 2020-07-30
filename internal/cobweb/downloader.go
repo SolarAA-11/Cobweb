@@ -18,6 +18,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+var downloaderDefaultReadTimeout = time.Second * 15
+
 type absDownloaderManager interface {
 	stop()
 }
@@ -114,7 +116,14 @@ func (d *downloaderManager) downloadRoutine(routineID int) {
 			if success {
 				d.outCMDChannel <- cmd
 			} else {
-				go d.sleepAndReBackToCMDInChannel(cmd)
+				go func() {
+					if cmd.isUnderFailCntLimit() {
+						time.Sleep(d.downloaderReqHostInterval)
+						d.inCMDChannel <- cmd
+					} else {
+						cmd.task.recordFailedCommand(cmd)
+					}
+				}()
 			}
 
 		case <-d.stopChannel:
@@ -163,9 +172,9 @@ func (d *downloaderManager) download(cmd *command) bool {
 			}).Info("finish download")
 			success = true
 		} else {
-			//logrus.WithFields(cmd.logrusFields()).WithFields(acquiredDownloader.logrusFields()).WithFields(logrus.Fields{
-			//	"LastIndex": lastIndex,
-			//}).Info("failed download")
+			logrus.WithFields(cmd.logrusFields()).WithFields(acquiredDownloader.logrusFields()).WithFields(logrus.Fields{
+				"LastIndex": lastIndex,
+			}).Info("failed download")
 			success = false
 		}
 	}
@@ -372,6 +381,7 @@ func newFastHTTPDownloader(
 	} else {
 		d.client = &fasthttp.Client{Dial: d.proxyUsed.FastHTTPDialHTTPProxy()}
 	}
+	d.client.ReadTimeout = downloaderDefaultReadTimeout
 
 	d.refreshCron.AddFunc("*/5 * * * *", d.refreshHostInfo)
 	d.refreshCron.Start()
@@ -471,14 +481,16 @@ func (d *fastHTTPDownloader) download(cmd *command) error {
 	defer d.reqSemaphore.Release()
 
 	// start download
+	//err := d.client.DoRedirects(cmd.request(), cmd.response(), 1)
+	//d.client.GetTimeout()
 	err := d.client.DoTimeout(cmd.request(), cmd.response(), cmd.timeout())
-	valid := cmd.downloadFinished(err)
+	cmd.downloadFinish(err)
 
 	// command check download result valid
 	d.reqTimeLocker.Lock()
 	defer d.reqTimeLocker.Unlock()
 	reqHost := string(cmd.request().Host())
-	if valid {
+	if cmd.isDownloadValid() {
 		// download valid
 		d.host2LastReqTime[reqHost] = time.Now()
 		d.resetErrCnt()
@@ -565,7 +577,8 @@ func (d *simpleDownloaderManager) download(cmd *command) {
 		Dial: proxy.FastHTTPDialHTTPProxy(),
 	}
 	err = client.DoTimeout(cmd.request(), cmd.response(), cmd.timeout())
-	if cmd.downloadFinished(err) && cmd.response().StatusCode() == 200 {
+	cmd.downloadFinish(err)
+	if cmd.isDownloadValid() {
 		logrus.WithFields(cmd.logrusFields()).WithFields(logrus.Fields{
 			"Proxy": proxy,
 		}).Info("Finish one cmd download")

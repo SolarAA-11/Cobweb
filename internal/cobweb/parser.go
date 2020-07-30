@@ -62,13 +62,13 @@ func (p *parser) parseRoutine(routineID int) {
 		case cmd, ok := <-p.inCMDChannel:
 			if !ok {
 				logEntry.Fatal("inCMDChannel has been closed. Bad usage.")
-			} else if cmd == nil {
-				logEntry.Error("command is nil")
-				continue
 			}
 
 			newCMDs, newItemInfos := cmd.parse()
-			if cmd.needRetry {
+			if !cmd.isUnderFailCntLimit() {
+				cmd.task.recordFailedCommand(cmd)
+				continue
+			} else if cmd.needRetry {
 				newCMDs = append(newCMDs, cmd)
 				cmd.needRetry = false
 			}

@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	DefaultDownloadTimeout = time.Second * 20
+	DefaultDownloadTimeout       = time.Second * 20
+	DefaultCommandFailedCntLimit = 60
 )
 
 type OnParseCallback func(ctx *Context)
@@ -36,6 +37,14 @@ type PipelineRule interface {
 
 type TaskNameRule interface {
 	TaskName() string
+}
+
+type CommandDownloadFailLimitRule interface {
+	CommandDownloadFailLimit() int
+}
+
+type CommandFailedCntLimitRule interface {
+	CommandFailedCntLimit() int
 }
 
 type DownloadTimeoutRule interface {
@@ -66,6 +75,8 @@ type Task struct {
 	onPipeErrorCallback      OnPipeErrorCallback
 	onDownloadFinishCallback OnDownloadFinishCallback
 
+	cmdFailedCntLimit int
+
 	cmdCountLocker    sync.Mutex
 	runningCMDCount   int
 	completedCMDCount int
@@ -92,6 +103,7 @@ func newTaskFromRule(rule BaseRule) *Task {
 	t.setName(rule)
 	t.setDownloadTimeout(rule)
 	t.setPipelines(rule)
+	t.setCommandFailedCntLimit(rule)
 	t.setParseErrorCallback(rule)
 	t.setPipeErrorCallback(rule)
 	t.setDownloadFinishCallback(rule)
@@ -122,6 +134,15 @@ func (t *Task) setName(rule BaseRule) {
 			panic("rule has to be a struct")
 		}
 		t.name = ruleVal.Type().Name()
+	}
+}
+
+func (t *Task) setCommandFailedCntLimit(rule BaseRule) {
+	limitRule, ok := rule.(CommandFailedCntLimitRule)
+	if ok {
+		t.cmdFailedCntLimit = limitRule.CommandFailedCntLimit()
+	} else {
+		t.cmdFailedCntLimit = DefaultCommandFailedCntLimit
 	}
 }
 
@@ -237,6 +258,8 @@ func (t *Task) recordFailedCommand(cmd *command) {
 	defer t.cmdCountLocker.Unlock()
 	t.runningCMDCount--
 	t.failedCMDCount++
+
+	logrus.WithFields(cmd.logrusFields()).Warn("failed command")
 
 	t.itemCountLocker.Lock()
 	defer t.itemCountLocker.Unlock()

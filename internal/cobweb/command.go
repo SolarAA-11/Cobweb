@@ -158,6 +158,9 @@ type command struct {
 	downloadError    error
 	downloadTimeout  time.Duration
 
+	downloadFailedCount int
+	parseFailedCount    int
+
 	// context extra info data
 	contextData H
 
@@ -172,12 +175,14 @@ func (c *command) finalizer() {
 
 func (c *command) logrusFields() logrus.Fields {
 	return logrus.Fields{
-		"CommandID":   c.id,
-		"Request":     c.downloadRequest.String(),
-		"RespBodyLen": len(c.downloadResponse.Body()),
-		"StatusCode":  c.downloadResponse.StatusCode(),
-		"DownloadErr": c.downloadError,
-		"Task":        c.task.logrusFields(),
+		"CommandID":           c.id,
+		"Request":             c.downloadRequest.String(),
+		"RespBodyLen":         len(c.downloadResponse.Body()),
+		"StatusCode":          c.downloadResponse.StatusCode(),
+		"DownloadErr":         c.downloadError,
+		"DownloadFailedCount": c.downloadFailedCount,
+		"ParseFailedCount":    c.parseFailedCount,
+		"Task":                c.task.logrusFields(),
 	}
 }
 
@@ -203,11 +208,21 @@ func (c *command) timeout() time.Duration {
 	return c.downloadTimeout
 }
 
-func (c *command) downloadFinished(downloadError error) bool {
+func (c *command) downloadFinish(downloadError error) {
 	c.task.onDownloadFinishCallback(c.createContext())
 	c.downloadError = downloadError
 	//return c.downloadError == nil
-	return c.downloadError == nil && c.downloadResponse.StatusCode() == 200
+	if !c.isDownloadValid() {
+		c.downloadFailedCount++
+	}
+}
+
+func (c *command) isDownloadValid() bool {
+	return c.downloadError == nil
+}
+
+func (c *command) isUnderFailCntLimit() bool {
+	return c.downloadFailedCount+c.parseFailedCount < c.task.cmdFailedCntLimit
 }
 
 // use coreCommand to handle context, parse required resource to generate new command and itemInfo
@@ -237,6 +252,8 @@ func (c *command) parseDeferFunc() {
 		// parse method return normal
 		return
 	}
+
+	c.parseFailedCount++
 
 	// parse method panics
 	switch panicVal.(type) {
